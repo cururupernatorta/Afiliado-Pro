@@ -2,12 +2,13 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import path from 'path'
 import { DatabaseManager } from './database'
-import { QueueManager } from './queue'
+import { QueueManager, SendProductsExtra } from './queue'
 import { WhatsAppManager } from './whatsapp'
 import { TelegramManager } from './telegram'
 import { ScraperManager } from './scraper'
 import { AffiliateManager } from './affiliate'
 import { setMainWindow } from './utils'
+import { formatMessage } from './messageHelper'
 import log from 'electron-log'
 
 let mainWindow: BrowserWindow | null = null
@@ -169,27 +170,25 @@ app.whenReady().then(async () => {
         // Template padrao SEM link da plataforma, COM link do grupo
         const templateText = template?.template_text ||
           '*{title}*\n\n' +
-          '💰 De ~~R$ {original_price}~~ por *R$ {price}*\n\n' +
+          '💰 {price_line}\n\n' +
           '📝 {description}\n\n' +
           '🔗 {affiliate_url}\n\n' +
           '⚡ Corra antes que acabe!\n\n' +
           '👥 Entre no nosso grupo de ofertas: {group_link}'
 
-        const originalPrice = product.original_price && product.original_price > product.price
-          ? product.original_price.toFixed(2)
-          : (product.price * 1.3).toFixed(2)
+        // Aplica as edições manuais feitas antes do envio (modal "Enviar Produtos"),
+        // que antes eram coletadas na tela e descartadas sem nunca chegar aqui.
+        const effectiveProduct = {
+          ...product,
+          description: job.data.overrideDescription ?? product.description,
+        }
 
-        const message = templateText
-          .replace(/{title}/g, product.title)
-          .replace(/{price}/g, product.price.toFixed(2))
-          .replace(/{original_price}/g, originalPrice)
-          .replace(/{affiliate_url}/g, product.affiliate_url || product.original_url)
-          .replace(/{original_url}/g, product.original_url)
-          .replace(/{store}/g, product.store)
-          .replace(/{description}/g, (product.description || '').substring(0, 200))
-          .replace(/{group_link}/g, config.group_link || '')
+        const message = formatMessage(effectiveProduct, templateText, {
+          groupLink: config.group_link,
+          coupon: job.data.overrideCoupon,
+        })
 
-        const imagePath = product.image_path || product.image_url
+        const imagePath = job.data.overrideImagePath || product.image_path || product.image_url
 
         if (platform === 'whatsapp') {
           await whatsappManager.sendMessage(groupId, message, imagePath)
@@ -277,8 +276,8 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('whatsapp:toggleMonitor', (_, groupId: string, enabled: boolean) =>
     whatsappManager.toggleMonitor(groupId, enabled)
   )
-  ipcMain.handle('whatsapp:sendProducts', (_, groupIds: string[], productIds: number[]) =>
-    whatsappManager.sendProducts(groupIds, productIds)
+  ipcMain.handle('whatsapp:sendProducts', (_, groupIds: string[], productIds: number[], extra?: SendProductsExtra) =>
+    whatsappManager.sendProducts(groupIds, productIds, extra)
   )
   ipcMain.handle('whatsapp:getQrCode', () => whatsappManager.getQrCode())
 
@@ -289,8 +288,8 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('telegram:toggleMonitor', (_, groupId: string, enabled: boolean) =>
     telegramManager.toggleMonitor(groupId, enabled)
   )
-  ipcMain.handle('telegram:sendProducts', (_, groupIds: string[], productIds: number[]) =>
-    telegramManager.sendProducts(groupIds, productIds)
+  ipcMain.handle('telegram:sendProducts', (_, groupIds: string[], productIds: number[], extra?: SendProductsExtra) =>
+    telegramManager.sendProducts(groupIds, productIds, extra)
   )
   ipcMain.handle('telegram:sendCode', (_, code: string) => telegramManager.sendCode(code))
 

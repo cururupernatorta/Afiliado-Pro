@@ -38,10 +38,8 @@ export default function UpdateNotification() {
         initial={{ opacity: 0, y: -50, scale: 0.95 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: -50, scale: 0.95 }}
-        className={`fixed top-4 right-4 z-[9999] max-w-sm rounded-xl shadow-2xl border backdrop-blur-md ${
-          updateInfo.ready
-            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-            : 'bg-primary/10 border-primary/30 text-primary'
+        className={`fixed top-4 right-4 z-[9999] max-w-sm ticket-card ${
+          updateInfo.ready ? 'border-emerald-500/40' : 'border-primary/40'
         }`}
       >
         <div className='p-4'>
@@ -50,7 +48,7 @@ export default function UpdateNotification() {
               {updateInfo.ready ? (
                 <RotateCcw className='w-5 h-5 text-emerald-400' />
               ) : (
-                <Download className='w-5 h-5 text-primary animate-bounce' />
+                <Download className='w-5 h-5 text-primary' />
               )}
             </div>
             <div className='flex-1 min-w-0'>

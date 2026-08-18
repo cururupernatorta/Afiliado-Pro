@@ -1,0 +1,61 @@
+name: Release
+
+# Builda o instalador Windows e publica como GitHub Release a cada push na
+# main — mas só quando a versão em package.json muda. Sem isso, todo commit
+# tentaria publicar a mesma versão de novo e falharia (ou pisaria na release
+# anterior). Pra lançar uma atualização: dê um bump em "version" no
+# package.json antes de mergear/dar push na main. O electron-updater
+# (já configurado no app) detecta a nova release sozinho.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verifica se essa versão já foi publicada
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION já existe — nada a publicar. Dê um bump em version no package.json pra lançar de novo."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versão nova detectada: v$VERSION. Vou buildar e publicar."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-release:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Build (renderer + main)
+        run: npm run build
+
+      - name: Publicar instalador como GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish always

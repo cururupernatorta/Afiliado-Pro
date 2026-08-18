@@ -4,7 +4,7 @@ import path from 'path'
 import QRCode from 'qrcode'
 import log from 'electron-log'
 import { DatabaseManager } from './database'
-import { QueueManager } from './queue'
+import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
 import { sendToRenderer } from './utils'
 import { autoRepostProduct } from './messageHelper'
@@ -144,7 +144,7 @@ export class WhatsAppManager {
     log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo WhatsApp: ${group.name}`)
   }
 
-  async sendProducts(groupIds: string[], productIds: number[]): Promise<void> {
+  async sendProducts(groupIds: string[], productIds: number[], extra?: SendProductsExtra): Promise<void> {
     if (!this.sock || this.status !== 'connected') {
       throw new Error('WhatsApp não está conectado')
     }
@@ -165,6 +165,9 @@ export class WhatsAppManager {
           productPrice: product.price,
           productImagePath: product.image_path,
           affiliateUrl: product.affiliate_url || product.original_url,
+          overrideDescription: extra?.description,
+          overrideCoupon: extra?.coupon,
+          overrideImagePath: extra?.imageUrl,
         }, delayMs)
       }
     }

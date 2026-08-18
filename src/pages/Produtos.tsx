@@ -44,7 +44,7 @@ interface SendConfig {
 }
 
 export default function Produtos() {
-  const { products, addProduct, removeProduct, updateProduct, groups } = useAppStore()
+  const { products, addProduct, removeProduct, updateProduct, groups, config } = useAppStore()
 
   // listagem
   const [searchTerm, setSearchTerm]       = useState('')
@@ -225,12 +225,13 @@ export default function Produtos() {
     if (!p || !sendConfig) return ''
     const lines: string[] = []
     lines.push(`*${p.title}*`)
-    if (p.original_price) lines.push(`\n💰 De ~R$ ${p.original_price.toFixed(2)}~ por *R$ ${p.price.toFixed(2)}*`)
+    if (p.original_price && p.original_price > p.price) lines.push(`\n💰 De ~R$ ${p.original_price.toFixed(2)}~ por *R$ ${p.price.toFixed(2)}*`)
     else lines.push(`\n💰 *R$ ${p.price.toFixed(2)}*`)
     if (sendConfig.coupon) lines.push(`\n🏷️ Cupom: *${sendConfig.coupon}*`)
     if (sendConfig.description) lines.push(`\n📝 ${sendConfig.description}`)
     lines.push(`\n🔗 ${p.affiliate_url ?? p.original_url}`)
     lines.push(`\n⚡ Corra antes que acabe!`)
+    if (config?.group_link) lines.push(`\n👥 Entre no nosso grupo de ofertas: ${config.group_link}`)
     return lines.join('\n')
   }
 
@@ -290,7 +291,7 @@ export default function Produtos() {
       </div>
 
       {/* Products Table */}
-      <div className="glass-card rounded-xl overflow-hidden">
+      <div className="ticket-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
@@ -359,7 +360,7 @@ export default function Produtos() {
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-foreground">
+                    <td className="px-4 py-3 text-sm text-foreground font-mono-num">
                       <div>
                         <span className="font-medium">{formatCurrency(product.price)}</span>
                         {product.original_price && (
@@ -437,7 +438,7 @@ export default function Produtos() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="glass-card rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="ticket-card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
             >
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-foreground">Adicionar Produto</h3>
@@ -623,7 +624,7 @@ export default function Produtos() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="glass-card rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="ticket-card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
             >
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-foreground">Enviar Produtos</h3>
@@ -791,7 +792,7 @@ export default function Produtos() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="glass-card rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="ticket-card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
             >
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-foreground">Editar Produto</h3>
@@ -836,7 +837,10 @@ export default function Produtos() {
                       type="number"
                       step="0.01"
                       value={editingProduct.price}
-                      onChange={(e) => setEditingProduct({ ...editingProduct, price: parseFloat(e.target.value) })}
+                      onChange={(e) => {
+                        const parsed = parseFloat(e.target.value)
+                        setEditingProduct({ ...editingProduct, price: Number.isNaN(parsed) ? editingProduct.price : parsed })
+                      }}
                       className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                     />
                   </div>
@@ -846,7 +850,10 @@ export default function Produtos() {
                       type="number"
                       step="0.01"
                       value={editingProduct.original_price ?? ''}
-                      onChange={(e) => setEditingProduct({ ...editingProduct, original_price: parseFloat(e.target.value) })}
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        setEditingProduct({ ...editingProduct, original_price: raw === '' ? undefined : parseFloat(raw) })
+                      }}
                       placeholder="Opcional"
                       className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                     />
@@ -864,9 +871,13 @@ export default function Produtos() {
                 </div>
                 <button
                   onClick={async () => {
-                    await window.electronAPI.productUpdate(editingProduct.id, editingProduct)
-                    updateProduct(editingProduct.id, editingProduct)
-                    setEditingProduct(null)
+                    try {
+                      await window.electronAPI.productUpdate(editingProduct.id, editingProduct)
+                      updateProduct(editingProduct.id, editingProduct)
+                      setEditingProduct(null)
+                    } catch (error) {
+                      alert('Erro ao salvar alterações: ' + (error as Error).message)
+                    }
                   }}
                   className="w-full h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
                 >

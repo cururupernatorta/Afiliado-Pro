@@ -83,11 +83,11 @@ export default function Conexoes() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass-card rounded-xl p-6"
+          className="ticket-card p-6"
         >
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-md bg-green-500/10 flex items-center justify-center">
                 <MessageCircle className="w-6 h-6 text-green-500" />
               </div>
               <div>
@@ -175,11 +175,11 @@ export default function Conexoes() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="glass-card rounded-xl p-6"
+          className="ticket-card p-6"
         >
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-md bg-blue-500/10 flex items-center justify-center">
                 <Send className="w-6 h-6 text-blue-500" />
               </div>
               <div>

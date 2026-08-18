@@ -152,7 +152,7 @@ export default function Logs() {
       </div>
 
       {/* Logs List */}
-      <div className="glass-card rounded-xl overflow-hidden">
+      <div className="ticket-card overflow-hidden">
         {filteredLogs.length === 0 ? (
           <div className="text-center py-16">
             <FileText className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-50" />

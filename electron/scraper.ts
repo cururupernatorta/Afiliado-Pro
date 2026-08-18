@@ -4,6 +4,7 @@ import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
 import { Product } from './database'
 import { renderPageHtml } from './headlessScraper'
+import { humanizeDescription } from './humanize'
 
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
@@ -30,13 +31,28 @@ export class ScraperManager {
       throw new Error('Loja não suportada. URLs suportadas: Shopee, Mercado Livre, Amazon, AliExpress')
     }
     try {
+      let result: Partial<Product>
       switch (store) {
-        case 'shopee': return await this.scrapeShopee(url)
-        case 'mercado_livre': return await this.scrapeMercadoLivre(url)
-        case 'amazon': return await this.scrapeAmazon(url)
-        case 'aliexpress': return await this.scrapeAliExpress(url)
+        case 'shopee': result = await this.scrapeShopee(url); break
+        case 'mercado_livre': result = await this.scrapeMercadoLivre(url); break
+        case 'amazon': result = await this.scrapeAmazon(url); break
+        case 'aliexpress': result = await this.scrapeAliExpress(url); break
         default: throw new Error('Loja não suportada')
       }
+
+      // A descrição raspada da página é texto de marketing do próprio site, não
+      // algo escrito para o anúncio do grupo — troca por uma versão humanizada
+      // local (sem IA), gerada a partir dos dados reais já extraídos.
+      if (result.title && typeof result.price === 'number') {
+        result.description = humanizeDescription({
+          title: result.title,
+          store,
+          price: result.price,
+          original_price: result.original_price,
+        })
+      }
+
+      return result
     } catch (error) {
       log.error('Erro no scraping:', error)
       throw new Error(`Não foi possível extrair dados do produto. Erro: ${(error as Error).message}`)
@@ -235,7 +251,6 @@ export class ScraperManager {
     return {
       title: title || 'Produto Shopee',
       price,
-      original_price: price,
       image_url: imageUrl,
       description: description.substring(0, 500),
       original_url: url,
@@ -280,7 +295,6 @@ export class ScraperManager {
     return {
       title: title || 'Produto Mercado Livre',
       price,
-      original_price: price,
       image_url: imageUrl,
       description: description.substring(0, 500),
       original_url: url,
@@ -323,7 +337,6 @@ export class ScraperManager {
     return {
       title: title || 'Produto Amazon',
       price,
-      original_price: price,
       image_url: imageUrl,
       description: description.substring(0, 500),
       original_url: url,
@@ -367,7 +380,9 @@ export class ScraperManager {
       bodyFallback: true,
     })
 
-    // Preço original: tenta achar explicitamente nos scripts; se não achar, estima 30% a mais.
+    // Preço original: só usa se achar explicitamente nos scripts da página. Nunca
+    // estima/inventa um valor — sem preço original real, o anúncio mostra só o
+    // preço atual, sem fingir um desconto que não existe.
     let originalPrice = 0
     $('script').each((_, el) => {
       if (originalPrice > 0) return
@@ -390,9 +405,6 @@ export class ScraperManager {
         }
       }
     })
-    if (originalPrice === 0 && price > 0) {
-      originalPrice = price * 1.3
-    }
 
     const imageUrl =
       $('meta[property="og:image"]').attr('content') ||
@@ -496,9 +508,8 @@ export class ScraperManager {
                 results.push({
                   title,
                   price,
-                  original_price: price * 1.3,
                   image_url: imageUrl,
-                  description: title,
+                  description: humanizeDescription({ title, store: 'amazon', price }),
                   original_url: fullUrl,
                   store: 'amazon',
                   source: 'manual',
@@ -524,9 +535,8 @@ export class ScraperManager {
                 results.push({
                   title,
                   price,
-                  original_price: price * 1.3,
                   image_url: imageUrl,
-                  description: title,
+                  description: humanizeDescription({ title, store: 'mercado_livre', price }),
                   original_url: link,
                   store: 'mercado_livre',
                   source: 'manual',
@@ -553,9 +563,8 @@ export class ScraperManager {
                   results.push({
                     title,
                     price,
-                    original_price: price * 1.3,
                     image_url: imageUrl,
-                    description: title,
+                    description: humanizeDescription({ title, store: 'shopee', price }),
                     original_url: fullUrl,
                     store: 'shopee',
                     source: 'manual',
@@ -585,9 +594,8 @@ export class ScraperManager {
                   results.push({
                     title,
                     price,
-                    original_price: price * 1.3,
                     image_url: imageUrl,
-                    description: title,
+                    description: humanizeDescription({ title, store: 'aliexpress', price }),
                     original_url: fullUrl,
                     store: 'aliexpress',
                     source: 'manual',

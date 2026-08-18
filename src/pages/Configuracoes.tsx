@@ -24,7 +24,7 @@ import {
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 
-const DEFAULT_TEMPLATE = '*{title}*\n\n💰 De ~~R$ {original_price}~~ por *R$ {price}*\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!'
+const DEFAULT_TEMPLATE = '*{title}*\n\n💰 {price_line}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}'
 
 export default function Configuracoes() {
   const { setConfig, autoSendTargets, setAutoSendTargets, adTemplates, setAdTemplate } = useAppStore()
@@ -313,7 +313,7 @@ export default function Configuracoes() {
           {affiliateStores.map((store) => {
             const Icon = store.icon
             return (
-              <motion.div key={store.name} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 space-y-4">
+              <motion.div key={store.name} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="ticket-card p-5 space-y-4">
                 <div className="flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-lg ${store.bg} flex items-center justify-center`}>
                     <Icon className={`w-5 h-5 ${store.color}`} />
@@ -358,7 +358,7 @@ export default function Configuracoes() {
           <Tag className="w-5 h-5 text-primary" />
           <h4 className="text-base font-semibold text-foreground">Nicho e Busca Automática</h4>
         </div>
-        <div className="glass-card rounded-xl p-5 space-y-5">
+        <div className="ticket-card p-5 space-y-5">
           <div className="space-y-2">
             <label className="text-sm text-foreground mb-2 block">Link do Grupo de Ofertas (WhatsApp/Telegram)</label>
             <input
@@ -424,7 +424,7 @@ export default function Configuracoes() {
           <Clock className="w-5 h-5 text-primary" />
           <h4 className="text-base font-semibold text-foreground">Automação</h4>
         </div>
-        <div className="glass-card rounded-xl p-5 space-y-5">
+        <div className="ticket-card p-5 space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="text-sm text-foreground mb-2 block">Limite Diário WhatsApp</label>
@@ -474,7 +474,7 @@ export default function Configuracoes() {
           <Moon className="w-5 h-5 text-primary" />
           <h4 className="text-base font-semibold text-foreground">Modo Stealth (Anti-Ban)</h4>
         </div>
-        <div className="glass-card rounded-xl p-5 space-y-5">
+        <div className="ticket-card p-5 space-y-5">
           <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
             <div className="flex items-center gap-3">
               <Eye className="w-5 h-5 text-primary" />
@@ -548,7 +548,7 @@ export default function Configuracoes() {
           <Zap className="w-5 h-5 text-primary" />
           <h4 className="text-base font-semibold text-foreground">Auto-Repost com Template Personalizado</h4>
         </div>
-        <div className="glass-card rounded-xl p-5 space-y-5">
+        <div className="ticket-card p-5 space-y-5">
           <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
             <div className="flex items-center gap-3">
               <Zap className="w-5 h-5 text-primary" />
@@ -606,7 +606,7 @@ export default function Configuracoes() {
                             {isExpanded && (
                               <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
                                 <div className="px-3 pb-3 space-y-2">
-                                  <label className="text-xs text-muted-foreground">Template (use {'{title}'}, {'{price}'}, {'{original_price}'}, {'{affiliate_url}'}, {'{store}'}, {'{description}'})</label>
+                                  <label className="text-xs text-muted-foreground">Template (use {'{title}'}, {'{price_line}'} — preço com desconto real, sem desconto fake —, {'{price}'}, {'{original_price}'}, {'{affiliate_url}'}, {'{store}'}, {'{description}'}, {'{group_link}'})</label>
                                   <textarea
                                     rows={4}
                                     value={template?.template_text || DEFAULT_TEMPLATE}
@@ -672,7 +672,7 @@ export default function Configuracoes() {
                             {isExpanded && (
                               <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
                                 <div className="px-3 pb-3 space-y-2">
-                                  <label className="text-xs text-muted-foreground">Template (use {'{title}'}, {'{price}'}, {'{original_price}'}, {'{affiliate_url}'}, {'{store}'}, {'{description}'})</label>
+                                  <label className="text-xs text-muted-foreground">Template (use {'{title}'}, {'{price_line}'} — preço com desconto real, sem desconto fake —, {'{price}'}, {'{original_price}'}, {'{affiliate_url}'}, {'{store}'}, {'{description}'}, {'{group_link}'})</label>
                                   <textarea
                                     rows={4}
                                     value={template?.template_text || DEFAULT_TEMPLATE}
@@ -708,7 +708,7 @@ export default function Configuracoes() {
         </div>
       </div>
 
-      <div className="glass-card rounded-xl p-4 border border-amber-500/20">
+      <div className="ticket-card p-4 border border-amber-500/20">
         <div className="flex items-start gap-3">
           <Shield className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
           <div>

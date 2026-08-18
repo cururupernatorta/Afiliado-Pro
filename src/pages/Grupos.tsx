@@ -98,7 +98,7 @@ export default function Grupos() {
       </div>
 
       {/* Groups List */}
-      <div className="glass-card rounded-xl overflow-hidden">
+      <div className="ticket-card overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="w-8 h-8 text-primary animate-spin" />
@@ -172,7 +172,7 @@ export default function Grupos() {
       </div>
 
       {/* Info */}
-      <div className="glass-card rounded-xl p-4">
+      <div className="ticket-card p-4">
         <div className="flex items-start gap-3">
           <div className={`p-2 rounded-lg ${
             activeTab === 'whatsapp' ? 'bg-green-500/10' : 'bg-blue-500/10'

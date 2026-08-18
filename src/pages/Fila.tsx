@@ -100,10 +100,10 @@ export default function Fila() {
             key={stat.label}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="glass-card rounded-xl p-4"
+            className="ticket-card p-4"
           >
             <p className="text-xs text-muted-foreground">{stat.label}</p>
-            <p className={`text-2xl font-bold ${stat.color} mt-1`}>{stat.value}</p>
+            <p className={`text-2xl font-mono-num font-semibold ${stat.color} mt-1`}>{stat.value}</p>
           </motion.div>
         ))}
       </div>
@@ -145,7 +145,7 @@ export default function Fila() {
       </div>
 
       {/* Jobs List */}
-      <div className="glass-card rounded-xl overflow-hidden">
+      <div className="ticket-card overflow-hidden">
         {queueJobs.length === 0 ? (
           <div className="text-center py-16">
             <ListOrdered className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-50" />

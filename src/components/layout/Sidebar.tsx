@@ -10,7 +10,7 @@ import {
   FileText,
   ChevronLeft,
   ChevronRight,
-  Zap,
+  Tag,
 } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
 import { cn } from '../../lib/utils'
@@ -39,8 +39,8 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="h-16 flex items-center px-4 border-b border-sidebar-border">
         <div className="flex items-center gap-3 overflow-hidden">
-          <div className="w-9 h-9 rounded-xl bg-primary/20 flex items-center justify-center flex-shrink-0">
-            <Zap className="w-5 h-5 text-primary" />
+          <div className="w-9 h-9 rounded-md bg-primary flex items-center justify-center flex-shrink-0">
+            <Tag className="w-5 h-5 text-primary-foreground" />
           </div>
           <AnimatePresence>
             {sidebarOpen && (

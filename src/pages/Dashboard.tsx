@@ -5,16 +5,15 @@ import {
   Send,
   Users,
   Activity,
-  TrendingUp,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { formatCurrency, formatDate } from '../lib/utils'
 
 const stats = [
-  { label: 'Total de Produtos', icon: Package, key: 'products', color: 'text-blue-400', bg: 'bg-blue-400/10' },
-  { label: 'Envios Hoje', icon: Send, key: 'sends', color: 'text-green-400', bg: 'bg-green-400/10' },
-  { label: 'Grupos Ativos', icon: Users, key: 'groups', color: 'text-purple-400', bg: 'bg-purple-400/10' },
-  { label: 'Produtos Capturados', icon: Activity, key: 'captured', color: 'text-amber-400', bg: 'bg-amber-400/10' },
+  { label: 'Total de Produtos', icon: Package, key: 'products' },
+  { label: 'Envios Hoje', icon: Send, key: 'sends' },
+  { label: 'Grupos Ativos', icon: Users, key: 'groups' },
+  { label: 'Produtos Capturados', icon: Activity, key: 'captured' },
 ]
 
 const containerVariants = {
@@ -64,21 +63,16 @@ export default function Dashboard() {
             <motion.div
               key={stat.key}
               variants={itemVariants}
-              className="glass-card rounded-xl p-5 hover:border-primary/30 transition-all duration-300"
+              className="ticket-card p-5"
             >
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">{stat.label}</p>
-                  <p className="text-2xl font-bold text-foreground mt-1">{value}</p>
+                  <p className="text-3xl font-mono-num font-semibold text-foreground mt-1">{value}</p>
                 </div>
-                <div className={`p-2.5 rounded-lg ${stat.bg}`}>
-                  <Icon className={`w-5 h-5 ${stat.color}`} />
+                <div className="p-2.5 rounded-md bg-secondary">
+                  <Icon className="w-5 h-5 text-muted-foreground" />
                 </div>
-              </div>
-              <div className="flex items-center gap-1 mt-3">
-                <TrendingUp className="w-3.5 h-3.5 text-green-400" />
-                <span className="text-xs text-green-400">+12%</span>
-                <span className="text-xs text-muted-foreground ml-1">vs ontem</span>
               </div>
             </motion.div>
           )
@@ -91,7 +85,7 @@ export default function Dashboard() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
-          className="lg:col-span-2 glass-card rounded-xl p-5"
+          className="lg:col-span-2 ticket-card p-5"
         >
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-foreground">Produtos Recentes</h3>
@@ -111,9 +105,9 @@ export default function Dashboard() {
                   initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: 0.1 * index }}
-                  className="flex items-center gap-4 p-3 rounded-lg bg-secondary/50 hover:bg-secondary transition-colors"
+                  className="flex items-center gap-4 p-3 rounded-md bg-secondary/50 hover:bg-secondary transition-colors"
                 >
-                  <div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center overflow-hidden">
+                  <div className="w-12 h-12 rounded-md bg-muted flex items-center justify-center overflow-hidden">
                     {product.image_url ? (
                       <img src={product.image_url} alt={product.title} className="w-full h-full object-cover" />
                     ) : (
@@ -122,7 +116,7 @@ export default function Dashboard() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">{product.title}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground font-mono-num">
                       {formatCurrency(product.price)} · {product.store}
                     </p>
                   </div>
@@ -151,10 +145,10 @@ export default function Dashboard() {
           className="space-y-6"
         >
           {/* Status das Conexões */}
-          <div className="glass-card rounded-xl p-5">
+          <div className="ticket-card p-5">
             <h3 className="text-lg font-semibold text-foreground mb-4">Status das Conexões</h3>
             <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+              <div className="flex items-center justify-between p-3 rounded-md bg-secondary/50">
                 <div className="flex items-center gap-3">
                   <div className={`w-3 h-3 rounded-full ${whatsappStatus === 'connected' ? 'bg-green-500 status-online' : 'bg-red-500'}`} />
                   <span className="text-sm text-foreground">WhatsApp</span>
@@ -167,7 +161,7 @@ export default function Dashboard() {
                   {whatsappStatus === 'connected' ? 'Online' : 'Offline'}
                 </span>
               </div>
-              <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+              <div className="flex items-center justify-between p-3 rounded-md bg-secondary/50">
                 <div className="flex items-center gap-3">
                   <div className={`w-3 h-3 rounded-full ${telegramStatus === 'connected' ? 'bg-blue-500 status-online' : 'bg-red-500'}`} />
                   <span className="text-sm text-foreground">Telegram</span>
@@ -184,14 +178,14 @@ export default function Dashboard() {
           </div>
 
           {/* Logs Recentes */}
-          <div className="glass-card rounded-xl p-5">
+          <div className="ticket-card p-5">
             <h3 className="text-lg font-semibold text-foreground mb-4">Logs Recentes</h3>
             <div className="space-y-2 max-h-64 overflow-y-auto">
               {recentLogs.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">Nenhum log ainda</p>
               ) : (
                 recentLogs.map((log) => (
-                  <div key={log.id} className="flex items-start gap-2 p-2 rounded-lg bg-secondary/30">
+                  <div key={log.id} className="flex items-start gap-2 p-2 rounded-md bg-secondary/30">
                     <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${
                       log.type === 'success' ? 'bg-green-400' :
                       log.type === 'error' ? 'bg-red-400' :

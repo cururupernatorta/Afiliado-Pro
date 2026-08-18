@@ -5,7 +5,7 @@ export interface ElectronAPI {
   whatsappGetStatus: () => Promise<any>
   whatsappGetGroups: () => Promise<any[]>
   whatsappToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
-  whatsappSendProducts: (groupIds: string[], productIds: number[]) => Promise<void>
+  whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string }) => Promise<void>
   whatsappGetQrCode: () => Promise<string | null>
 
   // Telegram
@@ -14,7 +14,7 @@ export interface ElectronAPI {
   telegramGetStatus: () => Promise<any>
   telegramGetGroups: () => Promise<any[]>
   telegramToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
-  telegramSendProducts: (groupIds: string[], productIds: number[]) => Promise<void>
+  telegramSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string }) => Promise<void>
   telegramSendCode: (code: string) => Promise<void>
 
   // Produtos

@@ -35,3 +35,18 @@ Bot desktop de automação para afiliados. Capture produtos automaticamente de g
 
 ## Instalação
 
+## Lançar uma atualização (release)
+
+O app já vem com auto-update (`electron-updater` + GitHub Releases). Para os usuários
+que já têm o app instalado receberem uma atualização, basta:
+
+1. Dar um bump no campo `"version"` do `package.json` (ex.: `1.2.0` → `1.2.1`).
+2. Dar push/merge na branch `main`.
+
+O workflow `.github/workflows/release.yml` builda o instalador Windows e publica
+automaticamente como GitHub Release nessa versão — o app instalado detecta a nova
+release sozinho e oferece a atualização. Um push na `main` sem bump de versão não
+publica nada de novo (evita tentar recriar a mesma release).
+
+Requer que o repositório tenha GitHub Actions habilitado (padrão em repositórios novos).
+

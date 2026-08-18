@@ -175,7 +175,7 @@ export class DatabaseManager {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         platform TEXT NOT NULL CHECK(platform IN ('whatsapp', 'telegram')),
         group_id TEXT NOT NULL,
-        template_text TEXT NOT NULL DEFAULT '*{title}*\n\n💰 De ~~R$ {original_price}~~ por *R$ {price}*\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}',
+        template_text TEXT NOT NULL DEFAULT '*{title}*\n\n💰 {price_line}\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(platform, group_id)

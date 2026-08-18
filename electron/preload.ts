@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { SendProductsExtra } from './queue'
 
 export interface ElectronAPI {
   whatsappConnect: () => Promise<void>
@@ -6,7 +7,7 @@ export interface ElectronAPI {
   whatsappGetStatus: () => Promise<any>
   whatsappGetGroups: () => Promise<any[]>
   whatsappToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
-  whatsappSendProducts: (groupIds: string[], productIds: number[]) => Promise<void>
+  whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: SendProductsExtra) => Promise<void>
   whatsappGetQrCode: () => Promise<string | null>
 
   telegramConnect: (phoneNumber: string) => Promise<void>
@@ -14,7 +15,7 @@ export interface ElectronAPI {
   telegramGetStatus: () => Promise<any>
   telegramGetGroups: () => Promise<any[]>
   telegramToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
-  telegramSendProducts: (groupIds: string[], productIds: number[]) => Promise<void>
+  telegramSendProducts: (groupIds: string[], productIds: number[], extra?: SendProductsExtra) => Promise<void>
   telegramSendCode: (code: string) => Promise<void>
 
   productGetAll: () => Promise<any[]>
@@ -66,7 +67,7 @@ const api: ElectronAPI = {
   whatsappGetStatus: () => ipcRenderer.invoke('whatsapp:getStatus'),
   whatsappGetGroups: () => ipcRenderer.invoke('whatsapp:getGroups'),
   whatsappToggleMonitor: (groupId, enabled) => ipcRenderer.invoke('whatsapp:toggleMonitor', groupId, enabled),
-  whatsappSendProducts: (groupIds, productIds) => ipcRenderer.invoke('whatsapp:sendProducts', groupIds, productIds),
+  whatsappSendProducts: (groupIds, productIds, extra) => ipcRenderer.invoke('whatsapp:sendProducts', groupIds, productIds, extra),
   whatsappGetQrCode: () => ipcRenderer.invoke('whatsapp:getQrCode'),
 
   telegramConnect: (phoneNumber) => ipcRenderer.invoke('telegram:connect', phoneNumber),
@@ -74,7 +75,7 @@ const api: ElectronAPI = {
   telegramGetStatus: () => ipcRenderer.invoke('telegram:getStatus'),
   telegramGetGroups: () => ipcRenderer.invoke('telegram:getGroups'),
   telegramToggleMonitor: (groupId, enabled) => ipcRenderer.invoke('telegram:toggleMonitor', groupId, enabled),
-  telegramSendProducts: (groupIds, productIds) => ipcRenderer.invoke('telegram:sendProducts', groupIds, productIds),
+  telegramSendProducts: (groupIds, productIds, extra) => ipcRenderer.invoke('telegram:sendProducts', groupIds, productIds, extra),
   telegramSendCode: (code) => ipcRenderer.invoke('telegram:sendCode', code),
 
   productGetAll: () => ipcRenderer.invoke('product:getAll'),

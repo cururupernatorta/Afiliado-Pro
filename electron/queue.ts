@@ -4,6 +4,12 @@ import log from 'electron-log'
 import { sendToRenderer } from './utils'
 import { DatabaseManager } from './database'
 
+export interface SendProductsExtra {
+  description?: string
+  coupon?: string
+  imageUrl?: string
+}
+
 interface SendJob {
   platform: 'whatsapp' | 'telegram'
   groupId: string
@@ -12,6 +18,9 @@ interface SendJob {
   productPrice: number
   productImagePath?: string
   affiliateUrl: string
+  overrideDescription?: string
+  overrideCoupon?: string
+  overrideImagePath?: string
 }
 
 interface InMemoryJob {

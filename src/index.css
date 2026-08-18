@@ -40,77 +40,90 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/*
+  DIRECTION — "Ficha de oferta" (deal-ticket), not glass dashboard.
+  The product's real unit of work is a priced, verifiable deal, so the
+  interface is built like a ticket/price-tag system: flat surfaces, real
+  1px borders, a left accent stub on emphasis cards, monospace for every
+  number that must be trusted (price, ids, timestamps). No blurred glass,
+  no glowing pulses, no gradient text — those read as decoration on data
+  that has to be provably real (see PRODUCT.md, Product Principle 1).
+  Accent is warm amber (oferta/price-sticker), not green — green stays
+  reserved for the literal WhatsApp connection signal so it keeps meaning.
+*/
+
 :root {
-  --radius: 0.75rem;
-  --background: #0a0a0f;
-  --foreground: #f8fafc;
-  --card: rgba(15, 15, 25, 0.7);
-  --card-foreground: #f8fafc;
-  --popover: #0f0f19;
-  --popover-foreground: #f8fafc;
-  --primary: #22c55e;
-  --primary-foreground: #020617;
-  --secondary: #1e1e2e;
-  --secondary-foreground: #f8fafc;
-  --muted: #1e1e2e;
-  --muted-foreground: #94a3b8;
-  --accent: #1e1e2e;
-  --accent-foreground: #f8fafc;
-  --destructive: #ef4444;
-  --destructive-foreground: #f8fafc;
-  --border: rgba(255, 255, 255, 0.08);
-  --input: rgba(255, 255, 255, 0.08);
-  --ring: #22c55e;
-  --chart-1: #22c55e;
+  --radius: 0.5rem;
+  --background: #121214;
+  --foreground: #f2f1ea;
+  --card: #1a1a1d;
+  --card-foreground: #f2f1ea;
+  --popover: #1a1a1d;
+  --popover-foreground: #f2f1ea;
+  --primary: #f0a020;
+  --primary-foreground: #1a1204;
+  --secondary: #232326;
+  --secondary-foreground: #f2f1ea;
+  --muted: #232326;
+  --muted-foreground: #9a988f;
+  --accent: #232326;
+  --accent-foreground: #f2f1ea;
+  --destructive: #e5484d;
+  --destructive-foreground: #f2f1ea;
+  --border: #2c2c30;
+  --input: #2c2c30;
+  --ring: #f0a020;
+  --chart-1: #f0a020;
   --chart-2: #3b82f6;
-  --chart-3: #f59e0b;
-  --chart-4: #ef4444;
+  --chart-3: #22c55e;
+  --chart-4: #e5484d;
   --chart-5: #8b5cf6;
-  --sidebar-background: #07070d;
-  --sidebar-foreground: #f8fafc;
-  --sidebar-primary: #22c55e;
-  --sidebar-primary-foreground: #020617;
-  --sidebar-accent: #1e1e2e;
-  --sidebar-accent-foreground: #f8fafc;
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-ring: #22c55e;
+  --sidebar-background: #0d0d0f;
+  --sidebar-foreground: #f2f1ea;
+  --sidebar-primary: #f0a020;
+  --sidebar-primary-foreground: #1a1204;
+  --sidebar-accent: #1a1a1d;
+  --sidebar-accent-foreground: #f2f1ea;
+  --sidebar-border: #232326;
+  --sidebar-ring: #f0a020;
 }
 
 .dark {
-  --background: #0a0a0f;
-  --foreground: #f8fafc;
-  --card: rgba(15, 15, 25, 0.7);
-  --card-foreground: #f8fafc;
-  --popover: #0f0f19;
-  --popover-foreground: #f8fafc;
-  --primary: #22c55e;
-  --primary-foreground: #020617;
-  --secondary: #1e1e2e;
-  --secondary-foreground: #f8fafc;
-  --muted: #1e1e2e;
-  --muted-foreground: #94a3b8;
-  --accent: #1e1e2e;
-  --accent-foreground: #f8fafc;
-  --destructive: #ef4444;
-  --destructive-foreground: #f8fafc;
-  --border: rgba(255, 255, 255, 0.08);
-  --input: rgba(255, 255, 255, 0.08);
-  --ring: #22c55e;
-  --chart-1: #22c55e;
+  --background: #121214;
+  --foreground: #f2f1ea;
+  --card: #1a1a1d;
+  --card-foreground: #f2f1ea;
+  --popover: #1a1a1d;
+  --popover-foreground: #f2f1ea;
+  --primary: #f0a020;
+  --primary-foreground: #1a1204;
+  --secondary: #232326;
+  --secondary-foreground: #f2f1ea;
+  --muted: #232326;
+  --muted-foreground: #9a988f;
+  --accent: #232326;
+  --accent-foreground: #f2f1ea;
+  --destructive: #e5484d;
+  --destructive-foreground: #f2f1ea;
+  --border: #2c2c30;
+  --input: #2c2c30;
+  --ring: #f0a020;
+  --chart-1: #f0a020;
   --chart-2: #3b82f6;
-  --chart-3: #f59e0b;
-  --chart-4: #ef4444;
+  --chart-3: #22c55e;
+  --chart-4: #e5484d;
   --chart-5: #8b5cf6;
-  --sidebar-background: #07070d;
-  --sidebar-foreground: #f8fafc;
-  --sidebar-primary: #22c55e;
-  --sidebar-primary-foreground: #020617;
-  --sidebar-accent: #1e1e2e;
-  --sidebar-accent-foreground: #f8fafc;
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-ring: #22c55e;
+  --sidebar-background: #0d0d0f;
+  --sidebar-foreground: #f2f1ea;
+  --sidebar-primary: #f0a020;
+  --sidebar-primary-foreground: #1a1204;
+  --sidebar-accent: #1a1a1d;
+  --sidebar-accent-foreground: #f2f1ea;
+  --sidebar-border: #232326;
+  --sidebar-ring: #f0a020;
 }
 
 @layer base {
@@ -142,28 +155,25 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* Glassmorphism card */
-.glass-card {
-  background: rgba(15, 15, 25, 0.6);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+/* Números que precisam parecer dados reais e verificáveis (preços, ids, horários) */
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
-/* Animação de pulse para status online */
-@keyframes pulse-green {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
-  50% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+/* Ficha/ticket plano — substitui o glass-card. Sem blur, sem brilho. */
+.ticket-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+/* Indicador de status ao vivo — pulso discreto de opacidade, sem glow neon */
+@keyframes status-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 .status-online {
-  animation: pulse-green 2s infinite;
-}
-
-/* Gradient text */
-.gradient-text {
-  background: linear-gradient(135deg, #22c55e 0%, #3b82f6 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  animation: status-live 2s ease-in-out infinite;
 }

@@ -16,7 +16,7 @@ export default function Header() {
   }
 
   return (
-    <header className="h-16 border-b border-border bg-background/80 backdrop-blur-xl fixed top-0 right-0 z-40 flex items-center justify-between px-6"
+    <header className="h-16 border-b border-border bg-background fixed top-0 right-0 z-40 flex items-center justify-between px-6"
       style={{ left: sidebarOpen ? 260 : 72, transition: 'left 0.3s ease' }}
     >
       <div className="flex items-center gap-4">
@@ -46,8 +46,8 @@ export default function Header() {
           <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-primary rounded-full" />
         </button>
 
-        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
-          <span className="text-xs font-semibold text-primary">AP</span>
+        <div className="w-8 h-8 rounded-md bg-primary flex items-center justify-center">
+          <span className="text-xs font-semibold text-primary-foreground">AP</span>
         </div>
       </div>
     </header>

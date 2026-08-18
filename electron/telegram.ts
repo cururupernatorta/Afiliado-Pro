@@ -4,7 +4,7 @@ import path from 'path'
 import fs from 'fs'
 import log from 'electron-log'
 import { DatabaseManager } from './database'
-import { QueueManager } from './queue'
+import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
 import { sendToRenderer } from './utils'
 import { autoRepostProduct } from './messageHelper'
@@ -145,7 +145,7 @@ export class TelegramManager {
     log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo Telegram: ${group.name}`)
   }
 
-  async sendProducts(groupIds: string[], productIds: number[]): Promise<void> {
+  async sendProducts(groupIds: string[], productIds: number[], extra?: SendProductsExtra): Promise<void> {
     if (!this.client || this.status !== 'connected') {
       throw new Error('Telegram nao esta conectado')
     }
@@ -166,6 +166,9 @@ export class TelegramManager {
           productPrice: product.price,
           productImagePath: product.image_path,
           affiliateUrl: product.affiliate_url || product.original_url,
+          overrideDescription: extra?.description,
+          overrideCoupon: extra?.coupon,
+          overrideImagePath: extra?.imageUrl,
         }, delayMs)
       }
     }
