@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+release/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime data (SQLite db, sessions, logs, electron-store config)
+*.sqlite
+*.sqlite3
+*.db
+whatsapp-session/
+telegram-session/
+*.log
+logs/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
