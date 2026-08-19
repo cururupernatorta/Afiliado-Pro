@@ -85,12 +85,17 @@ export class ScraperManager {
 
   // Fallback pra sites que renderizam o preço via JavaScript (SPA). Mais lento e mais pesado
   // que fetchPage, então só deve ser chamado quando o scraping estático falhar ou vier bloqueado.
-  private async fetchPageHeadless(url: string, useMobileUA = false): Promise<{ $: cheerio.CheerioAPI; html: string }> {
+  private async fetchPageHeadless(
+    url: string,
+    useMobileUA = false,
+    options: { waitMs?: number; readyPattern?: RegExp } = {}
+  ): Promise<{ $: cheerio.CheerioAPI; html: string }> {
     log.info(`Scraping estático falhou/insuficiente — tentando renderizar com browser headless: ${url}`)
     const html = await renderPageHtml(url, {
       userAgent: useMobileUA ? MOBILE_UA : DESKTOP_UA,
-      waitMs: 3500,
+      waitMs: options.waitMs ?? 3500,
       timeoutMs: 25000,
+      readyPattern: options.readyPattern,
     })
     return { $: cheerio.load(html), html }
   }
@@ -438,11 +443,17 @@ export class ScraperManager {
       log.warn('Scraping estático do AliExpress falhou:', (err as Error).message)
     }
 
-    // O AliExpress geralmente embute o estado inicial em JSON no HTML (SSR), então o
-    // estático costuma funcionar. Se não funcionar, tenta o headless como último recurso.
+    // O AliExpress passou a renderizar a página do produto 100% no cliente
+    // (renderMode: "CSR" no HTML — o servidor não manda mais preço nenhum
+    // embutido), então o scraping estático quase sempre falha e cai aqui.
+    // O headless precisa de um teto de espera maior, com polling até os
+    // dados de preço aparecerem no DOM, em vez de uma pausa fixa curta.
     if (price === 0) {
       try {
-        const { $, html } = await this.fetchPageHeadless(url, true)
+        const { $, html } = await this.fetchPageHeadless(url, true, {
+          waitMs: 9000,
+          readyPattern: /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice/,
+        })
         const extracted = this.extractAliExpressFields($, html)
         if (extracted.price > 0) {
           title = extracted.title || title
