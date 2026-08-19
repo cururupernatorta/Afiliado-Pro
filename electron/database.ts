@@ -64,11 +64,20 @@ export interface AutoSendTarget {
   created_at?: string
 }
 
+export interface MessageTemplate {
+  id?: number
+  name: string
+  template_text: string
+  created_at?: string
+  updated_at?: string
+}
+
 export interface AdTemplate {
   id?: number
   platform: 'whatsapp' | 'telegram'
   group_id: string
-  template_text: string
+  template_id: number | null
+  template_text: string | null
 }
 
 export interface LogEntry {
@@ -91,6 +100,7 @@ export class DatabaseManager {
 
     this.db = new Database(dbPath)
     this.db.pragma('journal_mode = WAL')
+    this.db.pragma('foreign_keys = ON')
     this.initTables()
   }
 
@@ -171,11 +181,20 @@ export class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_auto_send_platform ON auto_send_targets(platform);
       CREATE INDEX IF NOT EXISTS idx_auto_send_enabled ON auto_send_targets(enabled);
 
+      CREATE TABLE IF NOT EXISTS message_templates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        template_text TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS ad_templates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         platform TEXT NOT NULL CHECK(platform IN ('whatsapp', 'telegram')),
         group_id TEXT NOT NULL,
-        template_text TEXT NOT NULL DEFAULT '*{title}*\n\n💰 {price_line}\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}',
+        template_id INTEGER REFERENCES message_templates(id) ON DELETE SET NULL,
+        template_text TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(platform, group_id)
@@ -219,6 +238,40 @@ export class DatabaseManager {
       }
     } catch (err) {
       log.error('Erro na migração aliexpress_tracking_id:', err)
+    }
+
+    // Migração: adiciona template_id em ad_templates (biblioteca de templates
+    // nomeados/reutilizáveis, substitui o texto solto por grupo)
+    try {
+      const columns = this.db.prepare("PRAGMA table_info(ad_templates)").all() as any[]
+      const hasTemplateId = columns.some((c) => c.name === 'template_id')
+      if (!hasTemplateId) {
+        this.db.exec('ALTER TABLE ad_templates ADD COLUMN template_id INTEGER REFERENCES message_templates(id) ON DELETE SET NULL')
+        log.info('Migração: coluna template_id adicionada à tabela ad_templates')
+
+        // Grupos configurados antes dessa migração guardavam o próprio texto solto
+        // em ad_templates.template_text. Sem isso, esse texto continuaria valendo
+        // pra sempre (via COALESCE em getAdTemplate) mesmo com a tela nova mostrando
+        // "Padrão do sistema" pro grupo — migra cada um pra um template nomeado na
+        // biblioteca nova, e associa o grupo a ele, preservando o texto E deixando
+        // visível/editável.
+        const legacyRows = this.db.prepare(
+          "SELECT id, platform, group_id, template_text FROM ad_templates WHERE template_text IS NOT NULL AND template_text != ''"
+        ).all() as { id: number; platform: string; group_id: string; template_text: string }[]
+
+        for (const row of legacyRows) {
+          const name = `Migrado — ${row.platform} — ${row.group_id}`.substring(0, 100)
+          const created = this.db.prepare(
+            'INSERT INTO message_templates (name, template_text) VALUES (?, ?)'
+          ).run(name, row.template_text)
+          this.db.prepare('UPDATE ad_templates SET template_id = ? WHERE id = ?').run(created.lastInsertRowid, row.id)
+        }
+        if (legacyRows.length > 0) {
+          log.info(`Migração: ${legacyRows.length} template(s) de grupo migrado(s) para a biblioteca`)
+        }
+      }
+    } catch (err) {
+      log.error('Erro na migração template_id:', err)
     }
   }
 
@@ -406,23 +459,73 @@ export class DatabaseManager {
     return this.db.prepare('SELECT * FROM auto_send_targets WHERE platform = ? AND enabled = 1').all(platform) as AutoSendTarget[]
   }
 
+  // Retorna o texto do grupo já resolvido: se o grupo aponta pra um template da
+  // biblioteca (template_id), usa o texto de lá; senão cai no template_text legado
+  // (grupos configurados antes da biblioteca existir).
   getAdTemplate(platform: string, groupId: string): AdTemplate | undefined {
-    return this.db.prepare('SELECT * FROM ad_templates WHERE platform = ? AND group_id = ?').get(platform, groupId) as AdTemplate | undefined
+    return this.db.prepare(`
+      SELECT at.id, at.platform, at.group_id, at.template_id,
+             COALESCE(mt.template_text, at.template_text) as template_text
+      FROM ad_templates at
+      LEFT JOIN message_templates mt ON mt.id = at.template_id
+      WHERE at.platform = ? AND at.group_id = ?
+    `).get(platform, groupId) as AdTemplate | undefined
   }
 
-  saveAdTemplate(template: Omit<AdTemplate, 'id' | 'created_at' | 'updated_at'>): void {
+  // Associa um grupo a um template da biblioteca. templateId = null desassocia
+  // (o grupo volta a usar o template padrão do sistema).
+  assignAdTemplate(platform: string, groupId: string, templateId: number | null): void {
+    // Se o id apontar pra um template que não existe mais (apagado em outra janela,
+    // ou id obsoleto no front), trata como "nenhum" em vez de deixar a constraint de
+    // chave estrangeira derrubar a operação com um erro.
+    const resolvedId = templateId !== null && this.getMessageTemplateById(templateId) ? templateId : null
     const stmt = this.db.prepare(`
-      INSERT INTO ad_templates (platform, group_id, template_text)
-      VALUES (?, ?, ?)
+      INSERT INTO ad_templates (platform, group_id, template_id, template_text)
+      VALUES (?, ?, ?, NULL)
       ON CONFLICT(platform, group_id) DO UPDATE SET
-        template_text = excluded.template_text,
+        template_id = excluded.template_id,
+        template_text = NULL,
         updated_at = CURRENT_TIMESTAMP
     `)
-    stmt.run(template.platform, template.group_id, template.template_text)
+    stmt.run(platform, groupId, resolvedId)
   }
 
   deleteAdTemplate(platform: string, groupId: string): void {
     this.db.prepare('DELETE FROM ad_templates WHERE platform = ? AND group_id = ?').run(platform, groupId)
+  }
+
+  // ==================== Biblioteca de Templates ====================
+
+  getMessageTemplates(): MessageTemplate[] {
+    return this.db.prepare('SELECT * FROM message_templates ORDER BY name').all() as MessageTemplate[]
+  }
+
+  getMessageTemplateById(id: number): MessageTemplate | undefined {
+    return this.db.prepare('SELECT * FROM message_templates WHERE id = ?').get(id) as MessageTemplate | undefined
+  }
+
+  createMessageTemplate(template: { name: string; template_text: string }): MessageTemplate {
+    const result = this.db.prepare(
+      'INSERT INTO message_templates (name, template_text) VALUES (?, ?)'
+    ).run(template.name, template.template_text)
+    return this.getMessageTemplateById(result.lastInsertRowid as number)!
+  }
+
+  updateMessageTemplate(id: number, template: { name?: string; template_text?: string }): void {
+    const fields: string[] = []
+    const values: any[] = []
+    if (template.name !== undefined) { fields.push('name = ?'); values.push(template.name) }
+    if (template.template_text !== undefined) { fields.push('template_text = ?'); values.push(template.template_text) }
+    if (fields.length === 0) return
+    fields.push('updated_at = CURRENT_TIMESTAMP')
+    values.push(id)
+    this.db.prepare(`UPDATE message_templates SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+  }
+
+  deleteMessageTemplate(id: number): void {
+    // ON DELETE SET NULL cuida de desassociar os grupos que usavam esse template
+    // (voltam a usar o padrão do sistema em vez de quebrar).
+    this.db.prepare('DELETE FROM message_templates WHERE id = ?').run(id)
   }
 
   // Send History (para stealth mode)

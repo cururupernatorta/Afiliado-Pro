@@ -5,7 +5,7 @@ export interface ElectronAPI {
   whatsappGetStatus: () => Promise<any>
   whatsappGetGroups: () => Promise<any[]>
   whatsappToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
-  whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string }) => Promise<void>
+  whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string; templateText?: string }) => Promise<void>
   whatsappGetQrCode: () => Promise<string | null>
 
   // Telegram
@@ -14,7 +14,7 @@ export interface ElectronAPI {
   telegramGetStatus: () => Promise<any>
   telegramGetGroups: () => Promise<any[]>
   telegramToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
-  telegramSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string }) => Promise<void>
+  telegramSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string; templateText?: string }) => Promise<void>
   telegramSendCode: (code: string) => Promise<void>
 
   // Produtos
@@ -46,7 +46,14 @@ export interface ElectronAPI {
 
   // Ad Templates
   adTemplateGet: (platform: string, groupId: string) => Promise<any>
-  adTemplateSave: (template: any) => Promise<void>
+  adTemplateAssign: (platform: string, groupId: string, templateId: number | null) => Promise<void>
+
+  messageTemplateList: () => Promise<any[]>
+  messageTemplateCreate: (template: { name: string; template_text: string }) => Promise<any>
+  messageTemplateUpdate: (id: number, template: { name?: string; template_text?: string }) => Promise<void>
+  messageTemplateDelete: (id: number) => Promise<void>
+  messageTemplateGetDefault: () => Promise<string>
+  previewMessage: (productId: number, templateText: string, extra?: { coupon?: string; description?: string }) => Promise<string>
 
   // Auto Update
   updateCheck: () => Promise<void>

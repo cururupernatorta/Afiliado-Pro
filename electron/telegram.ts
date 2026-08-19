@@ -183,6 +183,7 @@ export class TelegramManager {
           overrideDescription: extra?.description,
           overrideCoupon: extra?.coupon,
           overrideImagePath: extra?.imageUrl,
+          overrideTemplateText: extra?.templateText,
         }, delayMs)
       }
     }

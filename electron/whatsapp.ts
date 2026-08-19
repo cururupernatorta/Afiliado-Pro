@@ -192,6 +192,7 @@ export class WhatsAppManager {
           overrideDescription: extra?.description,
           overrideCoupon: extra?.coupon,
           overrideImagePath: extra?.imageUrl,
+          overrideTemplateText: extra?.templateText,
         }, delayMs)
       }
     }

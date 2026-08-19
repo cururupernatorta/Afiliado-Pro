@@ -8,7 +8,7 @@ import { TelegramManager } from './telegram'
 import { ScraperManager } from './scraper'
 import { AffiliateManager } from './affiliate'
 import { setMainWindow } from './utils'
-import { formatMessage } from './messageHelper'
+import { formatMessage, DEFAULT_TEMPLATE_TEXT, autoRepostProduct } from './messageHelper'
 import log from 'electron-log'
 
 let mainWindow: BrowserWindow | null = null
@@ -20,6 +20,28 @@ let scraperManager: ScraperManager
 let affiliateManager: AffiliateManager
 
 const isDev = !app.isPackaged
+
+// Garante que o produto tem um link de afiliado real antes de montar a mensagem —
+// usada tanto no envio de verdade quanto no preview, pra que o preview nunca mostre
+// o link original (não monetizado) quando o envio real vai gerar um afiliado.
+async function ensureAffiliateUrl(product: { id?: number; affiliate_url?: string; original_url: string }): Promise<string> {
+  if (product.affiliate_url) return product.affiliate_url
+  try {
+    const store = affiliateManager.detectStore(product.original_url)
+    if (store) {
+      const affiliateUrl = await affiliateManager.convertLink(product.original_url, store)
+      if (affiliateUrl) {
+        if (product.id) dbManager.updateProduct(product.id, { affiliate_url: affiliateUrl })
+        product.affiliate_url = affiliateUrl
+        log.info(`Link de afiliado gerado: ${affiliateUrl}`)
+        return affiliateUrl
+      }
+    }
+  } catch (err) {
+    log.warn('Erro ao gerar link de afiliado:', err)
+  }
+  return product.original_url
+}
 
 // ==================== AUTO UPDATE ====================
 function setupAutoUpdater(): void {
@@ -148,33 +170,16 @@ app.whenReady().then(async () => {
         }
 
         // Garantir que o link de afiliado existe
-        if (!product.affiliate_url && product.original_url) {
-          try {
-            const store = affiliateManager.detectStore(product.original_url)
-            if (store) {
-              const affiliateUrl = await affiliateManager.convertLink(product.original_url, store)
-              if (affiliateUrl) {
-                dbManager.updateProduct(product.id!, { affiliate_url: affiliateUrl })
-                product.affiliate_url = affiliateUrl
-                log.info(`Link de afiliado gerado no envio: ${product.title}`)
-              }
-            }
-          } catch (err) {
-            log.warn('Erro ao gerar link de afiliado no envio:', err)
-          }
-        }
+        await ensureAffiliateUrl(product)
 
         const config = dbManager.getConfig()
-        const template = dbManager.getAdTemplate(platform, groupId)
 
-        // Template padrao SEM link da plataforma, COM link do grupo
-        const templateText = template?.template_text ||
-          '*{title}*\n\n' +
-          '💰 {price_line}\n\n' +
-          '📝 {description}\n\n' +
-          '🔗 {affiliate_url}\n\n' +
-          '⚡ Corra antes que acabe!\n\n' +
-          '👥 Entre no nosso grupo de ofertas: {group_link}'
+        // Prioridade: template escolhido na hora do envio (modal "Enviar Produtos",
+        // só quando o usuário mexeu de propósito no seletor) > template associado ao
+        // grupo (biblioteca) > template padrão do sistema. "??" em vez de "||" pra
+        // não tratar um texto vazio de propósito como "nada foi escolhido".
+        const template = dbManager.getAdTemplate(platform, groupId)
+        const templateText = job.data.overrideTemplateText ?? template?.template_text ?? DEFAULT_TEMPLATE_TEXT
 
         // Aplica as edições manuais feitas antes do envio (modal "Enviar Produtos"),
         // que antes eram coletadas na tela e descartadas sem nunca chegar aqui.
@@ -224,8 +229,17 @@ app.whenReady().then(async () => {
                 const affiliateUrl = await affiliateManager.convertLink(deal.original_url!, store as any)
                 if (affiliateUrl) {
                   dbManager.updateProduct(created.id!, { affiliate_url: affiliateUrl })
+                  created.affiliate_url = affiliateUrl
                 }
                 log.info(`Oferta encontrada e salva: ${deal.title}`)
+
+                // Posta automaticamente nos grupos configurados (respeita o toggle
+                // "Ativar Auto-Repost" em Configurações). Sem isso a oferta só ficava
+                // salva na lista de Produtos, sem nunca ser enviada pra lugar nenhum.
+                await Promise.all([
+                  autoRepostProduct(created, 'whatsapp', dbManager, queueManager),
+                  autoRepostProduct(created, 'telegram', dbManager, queueManager),
+                ])
               }
             }
           }
@@ -335,7 +349,35 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('autoSend:toggleTarget', (_, platform: string, groupId: string, enabled: boolean) => dbManager.toggleAutoSendTarget(platform, groupId, enabled))
 
   ipcMain.handle('adTemplate:get', (_, platform: string, groupId: string) => dbManager.getAdTemplate(platform, groupId))
-  ipcMain.handle('adTemplate:save', (_, template) => dbManager.saveAdTemplate(template))
+  ipcMain.handle('adTemplate:assign', (_, platform: string, groupId: string, templateId: number | null) =>
+    dbManager.assignAdTemplate(platform, groupId, templateId)
+  )
+
+  // Biblioteca de templates de mensagem
+  ipcMain.handle('messageTemplate:list', () => dbManager.getMessageTemplates())
+  ipcMain.handle('messageTemplate:create', (_, template: { name: string; template_text: string }) =>
+    dbManager.createMessageTemplate(template)
+  )
+  ipcMain.handle('messageTemplate:update', (_, id: number, template: { name?: string; template_text?: string }) =>
+    dbManager.updateMessageTemplate(id, template)
+  )
+  ipcMain.handle('messageTemplate:delete', (_, id: number) => dbManager.deleteMessageTemplate(id))
+  ipcMain.handle('messageTemplate:getDefault', () => DEFAULT_TEMPLATE_TEXT)
+
+  // Renderiza uma prévia de mensagem usando o mesmo formatador do envio real
+  // (evita ter uma segunda lógica de montagem de texto só pra preview, que pode
+  // ficar diferente do que é realmente enviado).
+  ipcMain.handle('product:previewMessage', async (_, productId: number, templateText: string, extra: { coupon?: string; description?: string }) => {
+    const product = dbManager.getProductById(productId)
+    if (!product) return ''
+    const affiliateUrl = await ensureAffiliateUrl(product)
+    const config = dbManager.getConfig()
+    const effectiveProduct = { ...product, affiliate_url: affiliateUrl, description: extra?.description ?? product.description }
+    return formatMessage(effectiveProduct, templateText, {
+      groupLink: config.group_link,
+      coupon: extra?.coupon,
+    })
+  })
 
   // Auto Update
   ipcMain.handle('update:check', () => autoUpdater.checkForUpdatesAndNotify())

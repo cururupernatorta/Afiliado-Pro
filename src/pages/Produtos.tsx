@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Package,
@@ -41,10 +41,23 @@ interface SendConfig {
   coupon: string
   imageUrl: string
   imageFile: File | null
+  templateId: number | null
+  templateText: string
+  // Só true depois que o usuário mexe de propósito no seletor/texto do template.
+  // Enquanto false, o texto aqui é só o padrão pré-preenchido pra mostrar algo na
+  // tela — sem isso, todo envio manual ignorava silenciosamente o template que
+  // cada grupo já tem configurado em Configurações, mesmo sem o usuário escolher nada.
+  templateTouched: boolean
+}
+
+interface MessageTemplate {
+  id: number
+  name: string
+  template_text: string
 }
 
 export default function Produtos() {
-  const { products, addProduct, removeProduct, updateProduct, groups, config } = useAppStore()
+  const { products, addProduct, removeProduct, updateProduct, groups } = useAppStore()
 
   // listagem
   const [searchTerm, setSearchTerm]       = useState('')
@@ -72,9 +85,17 @@ export default function Produtos() {
   const [sendConfig, setSendConfig]         = useState<SendConfig | null>(null)
   const [showPreview, setShowPreview]       = useState(false)
   const [isSending, setIsSending]           = useState(false)
+  const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([])
+  const [defaultTemplateText, setDefaultTemplateText] = useState('')
+  const [previewText, setPreviewText]       = useState('')
+  const [loadingPreview, setLoadingPreview] = useState(false)
 
   // modal editar produto existente
   const [editingProduct, setEditingProduct] = useState<typeof products[0] | null>(null)
+
+  useEffect(() => {
+    window.electronAPI.messageTemplateList().then(setMessageTemplates).catch(() => {})
+  }, [])
 
   // ── filtros ────────────────────────────────────────────────────────────────
   const filteredProducts = products.filter((p) => {
@@ -165,18 +186,36 @@ export default function Produtos() {
   }
 
   // ── abrir modal de envio ───────────────────────────────────────────────────
-  const openSendModal = () => {
+  const openSendModal = async () => {
     // pega o primeiro produto selecionado para pré-preencher
     const first = products.find((p) => p.id === selectedProducts[0])
+    let defaultText = ''
+    try {
+      defaultText = await window.electronAPI.messageTemplateGetDefault()
+    } catch (error) {
+      console.error('Erro ao buscar template padrão:', error)
+    }
+    setDefaultTemplateText(defaultText)
     setSendConfig({
       description: first?.description ?? '',
       coupon:      '',
       imageUrl:    first?.image_url ?? '',
       imageFile:   null,
+      templateId:  null,
+      templateText: defaultText,
+      templateTouched: false,
     })
     setSelectedGroups([])
     setShowPreview(false)
     setShowSendModal(true)
+  }
+
+  const handleTemplateChange = (templateId: number | null) => {
+    setSendConfig((prev) => {
+      if (!prev) return prev
+      const chosen = templateId ? messageTemplates.find((t) => t.id === templateId) : null
+      return { ...prev, templateId, templateText: chosen?.template_text ?? defaultTemplateText, templateTouched: true }
+    })
   }
 
   // ── enviar ────────────────────────────────────────────────────────────────
@@ -191,6 +230,7 @@ export default function Produtos() {
         description: sendConfig?.description,
         coupon:      sendConfig?.coupon,
         imageUrl:    sendConfig?.imageUrl,
+        templateText: sendConfig?.templateTouched ? sendConfig.templateText : undefined,
       }
 
       if (waGroups.length > 0) {
@@ -220,20 +260,22 @@ export default function Produtos() {
   }
 
   // ── preview do anúncio ────────────────────────────────────────────────────
-  const buildPreviewText = () => {
-    const p = products.find((pr) => pr.id === selectedProducts[0])
-    if (!p || !sendConfig) return ''
-    const lines: string[] = []
-    lines.push(`*${p.title}*`)
-    if (p.original_price && p.original_price > p.price) lines.push(`\n💰 De ~R$ ${p.original_price.toFixed(2)}~ por *R$ ${p.price.toFixed(2)}*`)
-    else lines.push(`\n💰 *R$ ${p.price.toFixed(2)}*`)
-    if (sendConfig.coupon) lines.push(`\n🏷️ Cupom: *${sendConfig.coupon}*`)
-    if (sendConfig.description) lines.push(`\n📝 ${sendConfig.description}`)
-    lines.push(`\n🔗 ${p.affiliate_url ?? p.original_url}`)
-    lines.push(`\n⚡ Corra antes que acabe!`)
-    if (config?.group_link) lines.push(`\n👥 Entre no nosso grupo de ofertas: ${config.group_link}`)
-    return lines.join('\n')
-  }
+  // Usa o mesmo formatador do envio real (não uma lógica de texto separada),
+  // pra garantir que o preview mostra exatamente o que vai ser mandado.
+  useEffect(() => {
+    if (!showPreview || !sendConfig || selectedProducts.length === 0) return
+    let cancelled = false
+    setLoadingPreview(true)
+    window.electronAPI
+      .previewMessage(selectedProducts[0], sendConfig.templateText, {
+        coupon: sendConfig.coupon,
+        description: sendConfig.description,
+      })
+      .then((text) => { if (!cancelled) setPreviewText(text) })
+      .catch(() => { if (!cancelled) setPreviewText('Não foi possível gerar o preview.') })
+      .finally(() => { if (!cancelled) setLoadingPreview(false) })
+    return () => { cancelled = true }
+  }, [showPreview, sendConfig, selectedProducts])
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
@@ -676,6 +718,29 @@ export default function Produtos() {
                 </div>
               </div>
 
+              {/* Template */}
+              <div className="mb-4">
+                <label className="text-sm text-muted-foreground mb-1 block flex items-center gap-1">
+                  <FileText className="w-3.5 h-3.5" /> Template da mensagem
+                </label>
+                <select
+                  value={sendConfig.templateId ?? ''}
+                  onChange={(e) => handleTemplateChange(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">Padrão do sistema</option>
+                  {messageTemplates.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+                <textarea
+                  value={sendConfig.templateText}
+                  onChange={(e) => setSendConfig({ ...sendConfig, templateId: null, templateText: e.target.value, templateTouched: true })}
+                  rows={3}
+                  className="w-full mt-2 px-3 py-2 rounded-lg bg-secondary border border-border text-xs text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+                />
+              </div>
+
               {/* Cupom */}
               <div className="mb-4">
                 <label className="text-sm text-muted-foreground mb-1 block flex items-center gap-1">
@@ -722,7 +787,7 @@ export default function Produtos() {
                       exit={{ opacity: 0, height: 0 }}
                       className="mt-2 p-3 rounded-lg bg-secondary/60 border border-border text-sm text-foreground whitespace-pre-wrap font-mono"
                     >
-                      {buildPreviewText()}
+                      {loadingPreview ? 'Gerando preview...' : previewText}
                     </motion.div>
                   )}
                 </AnimatePresence>

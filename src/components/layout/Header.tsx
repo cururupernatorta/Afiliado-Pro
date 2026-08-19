@@ -11,6 +11,7 @@ export default function Header() {
     '/conexoes': 'Conexões',
     '/grupos': 'Grupos Monitorados',
     '/fila': 'Fila de Envio',
+    '/templates': 'Templates',
     '/configuracoes': 'Configurações',
     '/logs': 'Logs do Sistema',
   }

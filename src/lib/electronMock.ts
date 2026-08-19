@@ -49,7 +49,14 @@ export function installElectronMockIfNeeded() {
     autoSendToggleTarget: async () => {},
 
     adTemplateGet: async () => null,
-    adTemplateSave: async () => {},
+    adTemplateAssign: async () => {},
+
+    messageTemplateList: async () => [],
+    messageTemplateCreate: async (template: any) => ({ id: Date.now(), created_at: new Date().toISOString(), ...template }),
+    messageTemplateUpdate: async () => {},
+    messageTemplateDelete: async () => {},
+    messageTemplateGetDefault: async () => '*{title}*\n\n💰 {price_line}\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}',
+    previewMessage: async () => '',
 
     updateCheck: async () => {},
     updateInstall: async () => {},

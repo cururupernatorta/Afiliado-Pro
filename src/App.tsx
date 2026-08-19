@@ -7,6 +7,7 @@ import Conexoes from './pages/Conexoes'
 import Grupos from './pages/Grupos'
 import Fila from './pages/Fila'
 import Configuracoes from './pages/Configuracoes'
+import Templates from './pages/Templates'
 import Logs from './pages/Logs'
 
 function App() {
@@ -21,6 +22,7 @@ function App() {
           <Route path="/grupos" element={<Grupos />} />
           <Route path="/fila" element={<Fila />} />
           <Route path="/configuracoes" element={<Configuracoes />} />
+          <Route path="/templates" element={<Templates />} />
           <Route path="/logs" element={<Logs />} />
         </Routes>
       </Layout>

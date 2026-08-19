@@ -19,6 +19,10 @@ export interface FormatMessageExtra {
   coupon?: string
 }
 
+// Usado sempre que um grupo/envio não tem nenhum template da biblioteca associado.
+export const DEFAULT_TEMPLATE_TEXT =
+  '*{title}*\n\n💰 {price_line}\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}'
+
 // Só mostra "De X por Y" quando existe um preço original real e maior que o
 // atual. Nunca inventa um preço original (ex.: preço x 1.3) — anúncio com
 // desconto fake é o tipo de dado que o produto promete nunca fabricar.
@@ -63,8 +67,7 @@ export async function autoRepostProduct(
     let delay = 0
     for (const target of targets) {
       const template = dbManager.getAdTemplate(sourcePlatform, target.group_id)
-      const templateText = template?.template_text ||
-        '*{title}*\n\n💰 {price_line}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}'
+      const templateText = template?.template_text ?? DEFAULT_TEMPLATE_TEXT
 
       const formattedMessage = formatMessage(product, templateText, { groupLink: config.group_link })
       const delayMs = delay * 1000 * (config.min_delay_seconds + Math.random() * (config.max_delay_seconds - config.min_delay_seconds))

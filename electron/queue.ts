@@ -8,6 +8,7 @@ export interface SendProductsExtra {
   description?: string
   coupon?: string
   imageUrl?: string
+  templateText?: string
 }
 
 interface SendJob {
@@ -21,6 +22,7 @@ interface SendJob {
   overrideDescription?: string
   overrideCoupon?: string
   overrideImagePath?: string
+  overrideTemplateText?: string
 }
 
 interface InMemoryJob {

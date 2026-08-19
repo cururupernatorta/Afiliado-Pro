@@ -8,6 +8,7 @@ import {
   ListOrdered,
   Settings,
   FileText,
+  LayoutTemplate,
   ChevronLeft,
   ChevronRight,
   Tag,
@@ -21,6 +22,7 @@ const navItems = [
   { path: '/conexoes', label: 'Conexões', icon: Link2 },
   { path: '/grupos', label: 'Grupos', icon: Users },
   { path: '/fila', label: 'Fila de Envio', icon: ListOrdered },
+  { path: '/templates', label: 'Templates', icon: LayoutTemplate },
   { path: '/configuracoes', label: 'Configurações', icon: Settings },
   { path: '/logs', label: 'Logs', icon: FileText },
 ]

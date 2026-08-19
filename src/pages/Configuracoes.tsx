@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { Link } from 'react-router-dom'
+import { motion } from 'framer-motion'
 import {
   Settings,
   Save,
@@ -26,8 +27,6 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
-
-const DEFAULT_TEMPLATE = '*{title}*\n\n💰 {price_line}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}'
 
 export default function Configuracoes() {
   const { setConfig, autoSendTargets, setAutoSendTargets, adTemplates, setAdTemplate } = useAppStore()
@@ -61,8 +60,8 @@ export default function Configuracoes() {
   const [whatsappGroups, setWhatsappGroups] = useState<any[]>([])
   const [telegramGroups, setTelegramGroups] = useState<any[]>([])
   const [loadingGroups, setLoadingGroups] = useState(false)
-  const [expandedTemplate, setExpandedTemplate] = useState<string | null>(null)
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
+  const [messageTemplates, setMessageTemplates] = useState<{ id: number; name: string; template_text: string }[]>([])
 
   const [appVersion, setAppVersion] = useState('')
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'not-available' | 'available' | 'error'>('idle')
@@ -71,6 +70,7 @@ export default function Configuracoes() {
   useEffect(() => {
     loadConfig()
     loadAutoSendTargets()
+    loadMessageTemplates()
     window.electronAPI.getAppVersion().then(setAppVersion)
 
     const unsubChecking = window.electronAPI.onUpdateChecking(() => setUpdateStatus('checking'))
@@ -133,8 +133,24 @@ export default function Configuracoes() {
     try {
       const targets = await window.electronAPI.autoSendGetTargets()
       setAutoSendTargets(targets)
+      // Resolve o template associado a cada grupo (pra mostrar selecionado no dropdown)
+      await Promise.all(
+        targets.map(async (target: any) => {
+          const resolved = await window.electronAPI.adTemplateGet(target.platform, target.group_id)
+          if (resolved) setAdTemplate(`${target.platform}:${target.group_id}`, resolved)
+        })
+      )
     } catch (error) {
       console.error('Erro ao carregar auto-send targets:', error)
+    }
+  }
+
+  const loadMessageTemplates = async () => {
+    try {
+      const templates = await window.electronAPI.messageTemplateList()
+      setMessageTemplates(templates)
+    } catch (error) {
+      console.error('Erro ao carregar templates:', error)
     }
   }
 
@@ -207,14 +223,9 @@ export default function Configuracoes() {
         enabled: true,
       }
       await window.electronAPI.autoSendSaveTarget(target)
-      await window.electronAPI.adTemplateSave({
-        platform,
-        group_id: group.id,
-        template_text: DEFAULT_TEMPLATE,
-      })
+      // Sem template associado por enquanto — usa o padrão do sistema até o
+      // usuário escolher um da biblioteca no seletor.
       await loadAutoSendTargets()
-      const tpl = await window.electronAPI.adTemplateGet(platform, group.id)
-      if (tpl) setAdTemplate(`${platform}:${group.id}`, tpl)
     } catch (error) {
       console.error('Erro ao adicionar target:', error)
     }
@@ -238,20 +249,13 @@ export default function Configuracoes() {
     }
   }
 
-  const saveTemplate = async (platform: string, groupId: string, text: string) => {
+  const assignTemplate = async (platform: string, groupId: string, templateId: number | null) => {
     try {
-      await window.electronAPI.adTemplateSave({
-        platform,
-        group_id: groupId,
-        template_text: text,
-      })
-      setAdTemplate(`${platform}:${groupId}`, {
-        platform: platform as any,
-        group_id: groupId,
-        template_text: text,
-      })
+      await window.electronAPI.adTemplateAssign(platform, groupId, templateId)
+      const resolved = await window.electronAPI.adTemplateGet(platform, groupId)
+      if (resolved) setAdTemplate(`${platform}:${groupId}`, resolved)
     } catch (error) {
-      console.error('Erro ao salvar template:', error)
+      console.error('Erro ao associar template:', error)
     }
   }
 
@@ -592,11 +596,17 @@ export default function Configuracoes() {
           {formData.auto_repost_enabled && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-4">
               <div className="flex items-center justify-between">
-                <p className="text-sm text-muted-foreground">Selecione os grupos destino e personalize o anúncio para cada um</p>
-                <button onClick={loadAvailableGroups} disabled={loadingGroups} className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-secondary text-xs font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50">
-                  <Plus className="w-3.5 h-3.5" />
-                  {loadingGroups ? 'Carregando...' : 'Carregar Grupos'}
-                </button>
+                <p className="text-sm text-muted-foreground">Selecione os grupos destino e escolha o template de cada um</p>
+                <div className="flex items-center gap-2">
+                  <Link to="/templates" className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-secondary text-xs font-medium hover:bg-secondary/80 transition-colors">
+                    <FileText className="w-3.5 h-3.5" />
+                    Gerenciar templates
+                  </Link>
+                  <button onClick={loadAvailableGroups} disabled={loadingGroups} className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-secondary text-xs font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50">
+                    <Plus className="w-3.5 h-3.5" />
+                    {loadingGroups ? 'Carregando...' : 'Carregar Grupos'}
+                  </button>
+                </div>
               </div>
 
               {/* WhatsApp Targets */}
@@ -612,15 +622,11 @@ export default function Configuracoes() {
                     {autoSendTargets.filter((t) => t.platform === 'whatsapp').map((target) => {
                       const key = `${target.platform}:${target.group_id}`
                       const template = adTemplates[key]
-                      const isExpanded = expandedTemplate === key
                       return (
-                        <div key={target.group_id} className="rounded-lg bg-secondary/30 overflow-hidden">
-                          <div className="flex items-center justify-between p-3">
+                        <div key={target.group_id} className="rounded-lg bg-secondary/30 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
                             <span className="text-sm text-foreground font-medium">{target.group_name}</span>
                             <div className="flex items-center gap-2">
-                              <button onClick={() => setExpandedTemplate(isExpanded ? null : key)} className="p-1.5 rounded hover:bg-secondary transition-colors">
-                                <FileText className="w-4 h-4 text-primary" />
-                              </button>
                               <button onClick={() => toggleAutoSendTarget(target.platform, target.group_id, !target.enabled)} className="p-1 rounded hover:bg-secondary transition-colors">
                                 {target.enabled ? <ToggleRight className="w-5 h-5 text-green-400" /> : <ToggleLeft className="w-5 h-5 text-muted-foreground" />}
                               </button>
@@ -629,22 +635,19 @@ export default function Configuracoes() {
                               </button>
                             </div>
                           </div>
-                          <AnimatePresence>
-                            {isExpanded && (
-                              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                                <div className="px-3 pb-3 space-y-2">
-                                  <label className="text-xs text-muted-foreground">Template (use {'{title}'}, {'{price_line}'} — preço com desconto real, sem desconto fake —, {'{price}'}, {'{original_price}'}, {'{affiliate_url}'}, {'{store}'}, {'{description}'}, {'{group_link}'})</label>
-                                  <textarea
-                                    rows={4}
-                                    value={template?.template_text || DEFAULT_TEMPLATE}
-                                    onChange={(e) => saveTemplate(target.platform, target.group_id, e.target.value)}
-                                    className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none font-mono"
-                                  />
-                                  <p className="text-xs text-muted-foreground">Preview: {(template?.template_text || DEFAULT_TEMPLATE).replace(/{title}/g, 'Produto Exemplo').replace(/{price}/g, '99.90').replace(/{affiliate_url}/g, 'https://...')}</p>
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                            <select
+                              value={template?.template_id ?? ''}
+                              onChange={(e) => assignTemplate(target.platform, target.group_id, e.target.value ? Number(e.target.value) : null)}
+                              className="flex-1 h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            >
+                              <option value="">Padrão do sistema</option>
+                              {messageTemplates.map((t) => (
+                                <option key={t.id} value={t.id}>{t.name}</option>
+                              ))}
+                            </select>
+                          </div>
                         </div>
                       )
                     })}
@@ -678,15 +681,11 @@ export default function Configuracoes() {
                     {autoSendTargets.filter((t) => t.platform === 'telegram').map((target) => {
                       const key = `${target.platform}:${target.group_id}`
                       const template = adTemplates[key]
-                      const isExpanded = expandedTemplate === key
                       return (
-                        <div key={target.group_id} className="rounded-lg bg-secondary/30 overflow-hidden">
-                          <div className="flex items-center justify-between p-3">
+                        <div key={target.group_id} className="rounded-lg bg-secondary/30 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
                             <span className="text-sm text-foreground font-medium">{target.group_name}</span>
                             <div className="flex items-center gap-2">
-                              <button onClick={() => setExpandedTemplate(isExpanded ? null : key)} className="p-1.5 rounded hover:bg-secondary transition-colors">
-                                <FileText className="w-4 h-4 text-primary" />
-                              </button>
                               <button onClick={() => toggleAutoSendTarget(target.platform, target.group_id, !target.enabled)} className="p-1 rounded hover:bg-secondary transition-colors">
                                 {target.enabled ? <ToggleRight className="w-5 h-5 text-green-400" /> : <ToggleLeft className="w-5 h-5 text-muted-foreground" />}
                               </button>
@@ -695,22 +694,19 @@ export default function Configuracoes() {
                               </button>
                             </div>
                           </div>
-                          <AnimatePresence>
-                            {isExpanded && (
-                              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                                <div className="px-3 pb-3 space-y-2">
-                                  <label className="text-xs text-muted-foreground">Template (use {'{title}'}, {'{price_line}'} — preço com desconto real, sem desconto fake —, {'{price}'}, {'{original_price}'}, {'{affiliate_url}'}, {'{store}'}, {'{description}'}, {'{group_link}'})</label>
-                                  <textarea
-                                    rows={4}
-                                    value={template?.template_text || DEFAULT_TEMPLATE}
-                                    onChange={(e) => saveTemplate(target.platform, target.group_id, e.target.value)}
-                                    className="w-full px-3 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none font-mono"
-                                  />
-                                  <p className="text-xs text-muted-foreground">Preview: {(template?.template_text || DEFAULT_TEMPLATE).replace(/{title}/g, 'Produto Exemplo').replace(/{price}/g, '99.90').replace(/{affiliate_url}/g, 'https://...')}</p>
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                            <select
+                              value={template?.template_id ?? ''}
+                              onChange={(e) => assignTemplate(target.platform, target.group_id, e.target.value ? Number(e.target.value) : null)}
+                              className="flex-1 h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            >
+                              <option value="">Padrão do sistema</option>
+                              {messageTemplates.map((t) => (
+                                <option key={t.id} value={t.id}>{t.name}</option>
+                              ))}
+                            </select>
+                          </div>
                         </div>
                       )
                     })}

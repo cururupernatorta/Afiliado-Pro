@@ -36,7 +36,16 @@ export interface AdTemplate {
   id?: number
   platform: 'whatsapp' | 'telegram'
   group_id: string
+  template_id: number | null
+  template_text: string | null
+}
+
+export interface MessageTemplate {
+  id: number
+  name: string
   template_text: string
+  created_at?: string
+  updated_at?: string
 }
 
 export interface Config {

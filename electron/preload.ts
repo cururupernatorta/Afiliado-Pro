@@ -41,7 +41,15 @@ export interface ElectronAPI {
   autoSendToggleTarget: (platform: string, groupId: string, enabled: boolean) => Promise<void>
 
   adTemplateGet: (platform: string, groupId: string) => Promise<any>
-  adTemplateSave: (template: any) => Promise<void>
+  adTemplateAssign: (platform: string, groupId: string, templateId: number | null) => Promise<void>
+
+  // Biblioteca de templates de mensagem
+  messageTemplateList: () => Promise<any[]>
+  messageTemplateCreate: (template: { name: string; template_text: string }) => Promise<any>
+  messageTemplateUpdate: (id: number, template: { name?: string; template_text?: string }) => Promise<void>
+  messageTemplateDelete: (id: number) => Promise<void>
+  messageTemplateGetDefault: () => Promise<string>
+  previewMessage: (productId: number, templateText: string, extra?: { coupon?: string; description?: string }) => Promise<string>
 
   // Auto Update
   updateCheck: () => Promise<void>
@@ -102,7 +110,14 @@ const api: ElectronAPI = {
   autoSendToggleTarget: (platform, groupId, enabled) => ipcRenderer.invoke('autoSend:toggleTarget', platform, groupId, enabled),
 
   adTemplateGet: (platform, groupId) => ipcRenderer.invoke('adTemplate:get', platform, groupId),
-  adTemplateSave: (template) => ipcRenderer.invoke('adTemplate:save', template),
+  adTemplateAssign: (platform, groupId, templateId) => ipcRenderer.invoke('adTemplate:assign', platform, groupId, templateId),
+
+  messageTemplateList: () => ipcRenderer.invoke('messageTemplate:list'),
+  messageTemplateCreate: (template) => ipcRenderer.invoke('messageTemplate:create', template),
+  messageTemplateUpdate: (id, template) => ipcRenderer.invoke('messageTemplate:update', id, template),
+  messageTemplateDelete: (id) => ipcRenderer.invoke('messageTemplate:delete', id),
+  messageTemplateGetDefault: () => ipcRenderer.invoke('messageTemplate:getDefault'),
+  previewMessage: (productId, templateText, extra) => ipcRenderer.invoke('product:previewMessage', productId, templateText, extra),
 
   // Auto Update
   updateCheck: () => ipcRenderer.invoke('update:check'),
