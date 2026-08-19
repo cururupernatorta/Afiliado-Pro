@@ -23,18 +23,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verifica se essa versão já foi publicada
+      - name: Verifica se essa versão já foi publicada (e está completa)
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release v$VERSION já existe — nada a publicar. Dê um bump em version no package.json pra lançar de novo."
+          # Não basta a release existir: já aconteceu de o electron-builder subir só
+          # o .blockmap e falhar antes do .exe/latest.yml, e mesmo assim o job terminar
+          # verde. Sem latest.yml o auto-updater nunca acha essa versão. Por isso o teste
+          # de "já publicado" exige latest.yml presente, não só a release existir.
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx 'latest.yml'; then
+            echo "Release v$VERSION já existe e está completa (latest.yml presente) — nada a publicar."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Versão nova detectada: v$VERSION. Vou buildar e publicar."
+            echo "Versão v$VERSION não publicada ainda (ou release incompleta, sem latest.yml). Vou buildar e publicar."
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -82,3 +86,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --publish always
+
+      # electron-builder pode terminar com exit code 0 mesmo se um upload de asset
+      # falhar no meio do caminho (já aconteceu: só o .blockmap subiu, sem o .exe
+      # nem o latest.yml, e o job ficou verde do mesmo jeito). Checa de verdade
+      # antes de considerar a release publicada.
+      - name: Verifica se a release ficou completa (latest.yml presente)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx 'latest.yml'; then
+            echo "OK: latest.yml presente na release v$VERSION"
+          else
+            echo "::error::Release v$VERSION publicada sem latest.yml — o auto-updater não vai encontrar essa versão. Provavelmente uma falha de upload no meio do processo do electron-builder."
+            exit 1
+          fi
