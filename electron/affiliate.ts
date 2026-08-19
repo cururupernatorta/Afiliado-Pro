@@ -16,7 +16,7 @@ export class AffiliateManager {
       switch (store) {
         case 'shopee': return await this.convertShopee(originalUrl, config)
         case 'mercado_livre': return this.convertMercadoLivre(originalUrl, config)
-        case 'amazon': return this.convertAmazon(originalUrl, config)
+        case 'amazon': return await this.convertAmazon(originalUrl, config)
         case 'aliexpress': return await this.convertAliExpress(originalUrl, config)
         default: return null
       }
@@ -99,13 +99,70 @@ export class AffiliateManager {
   }
 
   // ==================== AMAZON ====================
-  private convertAmazon(url: string, config: any): string | null {
+  // Links curtos de afiliado da Amazon (amzn.to, a.co, link.amazon...) já pertencem a quem
+  // os criou: o redirecionamento é resolvido pela Amazon a partir do código curto, e um
+  // "?tag=" colado em cima do link curto é ignorado nesse processo — o destino final continua
+  // com a tag de quem gerou o link original. Por isso, em vez de só colar a tag na URL
+  // recebida, resolvemos o produto real (ASIN) primeiro e montamos um link limpo do zero,
+  // só com a tag do usuário. Isso também limpa outros parâmetros de rastreamento de terceiros
+  // (linkCode, ascsubtag, linkId...) que um link longo capturado de outro afiliado carrega.
+  private readonly AMAZON_ASIN_PATTERN = /\/(?:dp|gp\/product|product)\/([A-Za-z0-9]{10})(?:[/?]|$)/i
+
+  private extractAmazonAsin(url: string): string | null {
+    const match = url.match(this.AMAZON_ASIN_PATTERN)
+    return match ? match[1].toUpperCase() : null
+  }
+
+  private async resolveAmazonRedirect(url: string): Promise<string> {
+    let current = url
+    for (let hop = 0; hop < 5; hop++) {
+      try {
+        const response = await axios.get(current, {
+          maxRedirects: 0,
+          validateStatus: () => true,
+          timeout: 10000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+          },
+        })
+        const location = response.headers?.location
+        if (response.status >= 300 && response.status < 400 && location) {
+          current = new URL(location, current).toString()
+          continue
+        }
+        break
+      } catch (err) {
+        log.warn('Falha ao resolver redirecionamento da Amazon:', (err as Error).message)
+        break
+      }
+    }
+    return current
+  }
+
+  private async convertAmazon(url: string, config: any): Promise<string | null> {
     if (!config.amazon_tag) {
       log.warn('Amazon Tag não configurada')
       return null
     }
     try {
-      const urlObj = new URL(url)
+      let resolvedUrl = url
+      let asin = this.extractAmazonAsin(url)
+
+      if (!asin) {
+        resolvedUrl = await this.resolveAmazonRedirect(url)
+        asin = this.extractAmazonAsin(resolvedUrl)
+      }
+
+      if (asin) {
+        const domain = new URL(resolvedUrl).hostname
+        return `https://${domain}/dp/${asin}?tag=${encodeURIComponent(config.amazon_tag)}`
+      }
+
+      // Não achei o ASIN nem depois de resolver o redirecionamento. Último recurso: cola a
+      // tag na URL final mesmo assim — mas isso NÃO garante sobrescrever a tag de outro
+      // afiliado se a URL de origem já era um link de afiliado alheio.
+      log.warn('Não consegui extrair o ASIN do link da Amazon; usando fallback (pode não sobrescrever tag de outro afiliado):', url)
+      const urlObj = new URL(resolvedUrl)
       urlObj.searchParams.set('tag', config.amazon_tag)
       return urlObj.toString()
     } catch (error) {
