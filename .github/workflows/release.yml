@@ -41,7 +41,12 @@ jobs:
   build-and-release:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
-    runs-on: windows-latest
+    # Fixo em windows-2022 (não windows-latest): a imagem mais nova do runner
+    # já vem com uma versão do Visual Studio que o node-gyp (usado pelo
+    # better-sqlite3 pra compilar o módulo nativo) ainda não reconhece,
+    # e a build falha com "could not find a version of Visual Studio to use"
+    # mesmo com o VS instalado. windows-2022 tem o VS 2022 reconhecido.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
