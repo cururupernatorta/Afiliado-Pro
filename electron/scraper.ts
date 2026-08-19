@@ -503,24 +503,27 @@ export class ScraperManager {
 
     try {
       switch (store) {
+        // Seletores conferidos ao vivo contra o HTML atual do site (2026-08-19).
+        // Amazon mudou de data-testid="deal-card" pra classes dcl-* (Deals Carousel).
         case 'amazon': {
           const amazonUrl = `https://www.amazon.com.br/deals`
           const { $: $amazon } = await this.fetchPage(amazonUrl)
-          $amazon('[data-testid="deal-card"]').each((_, el) => {
-            const title = $amazon(el).find('[data-testid="product-title"]').text().trim()
-            const priceText = $amazon(el).find('.a-price .a-offscreen').first().text()
-            const price = this.parsePrice(priceText || '')
-            const imageUrl = $amazon(el).find('img').first().attr('src')
-            const link = $amazon(el).find('a').first().attr('href')
-            if (title && link) {
+          $amazon('.a-carousel-card').each((_, el) => {
+            const title = $amazon(el).find('.dcl-product-label').first().text().trim()
+            const price = this.parsePrice($amazon(el).find('.dcl-product-price-new .a-offscreen').first().text())
+            const originalPrice = this.parsePrice($amazon(el).find('.dcl-product-price-old .a-offscreen').first().text())
+            const imageUrl = $amazon(el).find('.dcl-dynamic-image').first().attr('src')
+            const link = $amazon(el).find('.dcl-product-link').first().attr('href')
+            if (title && link && price > 0) {
               const fullUrl = link.startsWith('http') ? link : `https://www.amazon.com.br${link}`
               const matchesNiche = keywords.some((k) => title.toLowerCase().includes(k.toLowerCase()))
               if (matchesNiche) {
                 results.push({
                   title,
                   price,
+                  original_price: originalPrice > price ? originalPrice : undefined,
                   image_url: imageUrl,
-                  description: humanizeDescription({ title, store: 'amazon', price }),
+                  description: humanizeDescription({ title, store: 'amazon', price, original_price: originalPrice }),
                   original_url: fullUrl,
                   store: 'amazon',
                   source: 'manual',
@@ -531,23 +534,26 @@ export class ScraperManager {
           break
         }
 
+        // Mercado Livre migrou os cards de oferta pro componente "poly-card".
         case 'mercado_livre': {
           const mlUrl = `https://www.mercadolivre.com.br/ofertas`
           const { $: $ml } = await this.fetchPage(mlUrl)
-          $ml('.promotion-item').each((_, el) => {
-            const title = $ml(el).find('.promotion-item__title').text().trim()
-            const priceText = $ml(el).find('.promotion-item__price').text()
-            const price = this.parsePrice(priceText || '')
-            const imageUrl = $ml(el).find('img').first().attr('data-src') || $ml(el).find('img').first().attr('src')
-            const link = $ml(el).find('a').first().attr('href')
-            if (title && link) {
+          $ml('.poly-card').each((_, el) => {
+            const titleEl = $ml(el).find('a.poly-component__title').first()
+            const title = titleEl.text().trim()
+            const link = titleEl.attr('href')
+            const price = this.parsePrice($ml(el).find('.poly-price__current .andes-money-amount__fraction').first().text())
+            const originalPrice = this.parsePrice($ml(el).find('.poly-price__labels .andes-money-amount__fraction').first().text())
+            const imageUrl = $ml(el).find('.poly-component__picture').first().attr('src')
+            if (title && link && price > 0) {
               const matchesNiche = keywords.some((k) => title.toLowerCase().includes(k.toLowerCase()))
               if (matchesNiche) {
                 results.push({
                   title,
                   price,
+                  original_price: originalPrice > price ? originalPrice : undefined,
                   image_url: imageUrl,
-                  description: humanizeDescription({ title, store: 'mercado_livre', price }),
+                  description: humanizeDescription({ title, store: 'mercado_livre', price, original_price: originalPrice }),
                   original_url: link,
                   store: 'mercado_livre',
                   source: 'manual',
@@ -558,18 +564,23 @@ export class ScraperManager {
           break
         }
 
+        // A busca da Shopee bloqueia (captcha) requisição estática direta — precisa
+        // do fallback headless (mesma técnica usada no scraping de produto único).
         case 'shopee': {
           for (const keyword of keywords.slice(0, 2)) {
             const shopeeUrl = `https://shopee.com.br/search?keyword=${encodeURIComponent(keyword)}&sortBy=sales`
             try {
-              const { $: $shopee } = await this.fetchPage(shopeeUrl, true)
+              const { $: $shopee } = await this.fetchPageHeadless(shopeeUrl, true, {
+                waitMs: 7000,
+                readyPattern: /data-sqe="item"/,
+              })
               $shopee('[data-sqe="item"]').slice(0, 5).each((_, el) => {
                 const title = $shopee(el).find('[data-sqe="name"]').text().trim()
                 const priceText = $shopee(el).find('[data-sqe="price"]').text()
                 const price = this.parsePrice(priceText || '')
                 const imageUrl = $shopee(el).find('img').first().attr('src')
                 const link = $shopee(el).find('a').first().attr('href')
-                if (title && link) {
+                if (title && link && price > 0) {
                   const fullUrl = link.startsWith('http') ? link : `https://shopee.com.br${link}`
                   results.push({
                     title,
@@ -589,18 +600,23 @@ export class ScraperManager {
           break
         }
 
+        // Idem AliExpress: busca bloqueia estático, e a página de produto já virou
+        // 100% client-side (ver scrapeAliExpress) — a de busca é ainda mais protegida.
         case 'aliexpress': {
           for (const keyword of keywords.slice(0, 2)) {
             const aliUrl = `https://pt.aliexpress.com/wholesale?SearchText=${encodeURIComponent(keyword)}&sortType=total_tranpro_desc`
             try {
-              const { $: $ali } = await this.fetchPage(aliUrl, true)
+              const { $: $ali } = await this.fetchPageHeadless(aliUrl, true, {
+                waitMs: 9000,
+                readyPattern: /data-product-id/,
+              })
               $ali('[data-product-id]').slice(0, 5).each((_, el) => {
                 const title = $ali(el).find('.multi--titleText--').text().trim()
                 const priceText = $ali(el).find('.multi--price--').text()
                 const price = this.parsePrice(priceText || '')
                 const imageUrl = $ali(el).find('img').first().attr('src')
                 const link = $ali(el).find('a').first().attr('href')
-                if (title && link) {
+                if (title && link && price > 0) {
                   const fullUrl = link.startsWith('http') ? link : `https:${link}`
                   results.push({
                     title,
@@ -642,7 +658,12 @@ export class ScraperManager {
     if (commaIndex > dotIndex) {
       cleaned = cleaned.replace(/\./g, '').replace(',', '.')
     } else if (dotIndex > commaIndex) {
-      cleaned = cleaned.replace(/,/g, '')
+      // Sem vírgula nenhuma e o ponto separa grupos de exatos 3 dígitos (ex: "2.209",
+      // "1.234.567") — é separador de milhar do formato BR, não decimal. Confirmado
+      // testando ao vivo contra o Mercado Livre: preço "2.209" virava 2,209 sem isso.
+      const afterLastDot = cleaned.substring(cleaned.lastIndexOf('.') + 1)
+      const looksLikeThousands = commaIndex === -1 && afterLastDot.length === 3 && /^\d{1,3}(\.\d{3})+$/.test(cleaned)
+      cleaned = looksLikeThousands ? cleaned.replace(/\./g, '') : cleaned.replace(/,/g, '')
     } else if (commaIndex !== -1 && dotIndex === -1) {
       const afterComma = cleaned.substring(commaIndex + 1)
       if (afterComma.length <= 2) {
