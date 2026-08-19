@@ -65,6 +65,12 @@ function setupAutoUpdater(): void {
       version: info.version,
       releaseDate: info.releaseDate,
     })
+    dbManager.addLog({
+      type: 'info',
+      platform: 'system',
+      message: `Nova versão disponível: v${info.version}`,
+      details: 'Baixando automaticamente em segundo plano...',
+    })
   })
 
   autoUpdater.on('update-not-available', () => {
@@ -86,11 +92,23 @@ function setupAutoUpdater(): void {
     sendToRenderer('update:downloaded', {
       version: info.version,
     })
+    dbManager.addLog({
+      type: 'success',
+      platform: 'system',
+      message: `Atualização v${info.version} pronta para instalar`,
+      details: 'Reinicie o app para aplicar.',
+    })
   })
 
   autoUpdater.on('error', (err) => {
     log.error('Erro no auto-update:', err)
     sendToRenderer('update:error', err.message)
+    dbManager.addLog({
+      type: 'error',
+      platform: 'system',
+      message: 'Erro ao verificar atualizações',
+      details: err.message,
+    })
   })
 
   // Verificar updates 30 segundos apos iniciar
@@ -153,6 +171,7 @@ app.whenReady().then(async () => {
     const dbPath = path.join(userDataPath, 'afiliado-pro.db')
 
     dbManager = new DatabaseManager(dbPath)
+    dbManager.on('log', (entry) => sendToRenderer('log:entry', entry))
     queueManager = new QueueManager()
     queueManager.setDatabaseManager(dbManager)
     affiliateManager = new AffiliateManager(dbManager)
@@ -232,6 +251,12 @@ app.whenReady().then(async () => {
                   created.affiliate_url = affiliateUrl
                 }
                 log.info(`Oferta encontrada e salva: ${deal.title}`)
+                dbManager.addLog({
+                  type: 'success',
+                  platform: 'system',
+                  message: `Oferta encontrada (${store}): ${deal.title}`,
+                  details: `Nicho: ${cfg.niche}`,
+                })
 
                 // Posta automaticamente nos grupos configurados (respeita o toggle
                 // "Ativar Auto-Repost" em Configurações). Sem isso a oferta só ficava

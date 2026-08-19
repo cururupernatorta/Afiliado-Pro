@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import path from 'path'
 import fs from 'fs'
 import log from 'electron-log'
+import { EventEmitter } from 'events'
 
 export interface Product {
   id?: number
@@ -89,10 +90,11 @@ export interface LogEntry {
   created_at?: string
 }
 
-export class DatabaseManager {
+export class DatabaseManager extends EventEmitter {
   private db: Database.Database
 
   constructor(dbPath: string) {
+    super()
     const dir = path.dirname(dbPath)
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true })
@@ -559,12 +561,14 @@ export class DatabaseManager {
   }
 
   addLog(entry: Omit<LogEntry, 'id' | 'created_at'>): void {
-    this.db.prepare('INSERT INTO logs (type, platform, message, details) VALUES (?, ?, ?, ?)').run(
+    const result = this.db.prepare('INSERT INTO logs (type, platform, message, details) VALUES (?, ?, ?, ?)').run(
       entry.type,
       entry.platform ?? null,
       entry.message,
       entry.details ?? null
     )
+    const created = this.db.prepare('SELECT * FROM logs WHERE id = ?').get(result.lastInsertRowid) as LogEntry
+    this.emit('log', created)
   }
 
   getLogs(limit: number = 100, offset: number = 0): LogEntry[] {
