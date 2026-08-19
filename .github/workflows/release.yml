@@ -66,6 +66,7 @@ jobs:
       # valid tag" (422) mesmo sem nenhuma regra de proteção configurada. Com a tag já
       # existindo de verdade, a criação da release aponta pra uma referência real.
       - name: Criar e enviar a tag da versão (se ainda não existir)
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
