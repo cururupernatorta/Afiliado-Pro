@@ -342,4 +342,5 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('update:install', () => {
     autoUpdater.quitAndInstall(false, true)
   })
+  ipcMain.handle('app:getVersion', () => app.getVersion())
 }

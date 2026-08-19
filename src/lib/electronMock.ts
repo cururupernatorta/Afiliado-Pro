@@ -53,6 +53,7 @@ export function installElectronMockIfNeeded() {
 
     updateCheck: async () => {},
     updateInstall: async () => {},
+    getAppVersion: async () => '0.0.0-dev',
     onUpdateChecking: noop,
     onUpdateAvailable: noop,
     onUpdateNotAvailable: noop,

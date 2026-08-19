@@ -21,6 +21,9 @@ import {
   EyeOff,
   Moon,
   Tag,
+  RefreshCw,
+  Download,
+  AlertTriangle,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 
@@ -61,10 +64,34 @@ export default function Configuracoes() {
   const [expandedTemplate, setExpandedTemplate] = useState<string | null>(null)
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
 
+  const [appVersion, setAppVersion] = useState('')
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'not-available' | 'available' | 'error'>('idle')
+  const [updateErrorMsg, setUpdateErrorMsg] = useState('')
+
   useEffect(() => {
     loadConfig()
     loadAutoSendTargets()
+    window.electronAPI.getAppVersion().then(setAppVersion)
+
+    const unsubChecking = window.electronAPI.onUpdateChecking(() => setUpdateStatus('checking'))
+    const unsubAvailable = window.electronAPI.onUpdateAvailable(() => setUpdateStatus('available'))
+    const unsubNotAvailable = window.electronAPI.onUpdateNotAvailable(() => setUpdateStatus('not-available'))
+    const unsubError = window.electronAPI.onUpdateError((message) => {
+      setUpdateErrorMsg(message)
+      setUpdateStatus('error')
+    })
+    return () => {
+      unsubChecking()
+      unsubAvailable()
+      unsubNotAvailable()
+      unsubError()
+    }
   }, [])
+
+  const handleCheckUpdate = () => {
+    setUpdateStatus('checking')
+    window.electronAPI.updateCheck()
+  }
 
   const loadConfig = async () => {
     try {
@@ -704,6 +731,46 @@ export default function Configuracoes() {
                 )}
               </div>
             </motion.div>
+          )}
+        </div>
+      </div>
+
+      {/* Atualizações */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Download className="w-5 h-5 text-primary" />
+          <h4 className="text-base font-semibold text-foreground">Atualizações</h4>
+        </div>
+        <div className="ticket-card p-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Versão instalada: <span className="font-mono-num">{appVersion || '...'}</span>
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {updateStatus === 'checking' && 'Verificando se existe uma versão mais nova...'}
+                {updateStatus === 'not-available' && 'Você já está na versão mais recente.'}
+                {updateStatus === 'available' && 'Nova versão encontrada — baixando em segundo plano.'}
+                {updateStatus === 'error' && `Erro ao verificar: ${updateErrorMsg}`}
+                {updateStatus === 'idle' && 'O app verifica automaticamente ao abrir e a cada 4 horas.'}
+              </p>
+            </div>
+            <button
+              onClick={handleCheckUpdate}
+              disabled={updateStatus === 'checking'}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary border border-border text-sm font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50 flex-shrink-0"
+            >
+              <RefreshCw className={`w-4 h-4 ${updateStatus === 'checking' ? 'animate-spin' : ''}`} />
+              {updateStatus === 'checking' ? 'Verificando...' : 'Buscar atualizações agora'}
+            </button>
+          </div>
+          {updateStatus === 'error' && (
+            <div className="flex items-start gap-2 mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+              <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-400">
+                Não consegui verificar atualizações agora. Confira sua conexão com a internet e tente de novo.
+              </p>
+            </div>
           )}
         </div>
       </div>
