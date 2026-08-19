@@ -60,6 +60,23 @@ jobs:
       - name: Build (renderer + main)
         run: npm run build
 
+      # Cria e envia a tag da versão antes de publicar. Sem isso, o electron-builder
+      # tenta criar a release já publicada apontando pra uma tag que ainda não existe,
+      # e a API do GitHub às vezes rejeita isso com "Published releases must have a
+      # valid tag" (422) mesmo sem nenhuma regra de proteção configurada. Com a tag já
+      # existindo de verdade, a criação da release aponta pra uma referência real.
+      - name: Criar e enviar a tag da versão (se ainda não existir)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAG="v${{ needs.check-version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG já existe no remoto, pulando criação."
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
       - name: Publicar instalador como GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
