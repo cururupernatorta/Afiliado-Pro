@@ -1,6 +1,7 @@
 import { makeWASocket, DisconnectReason, useMultiFileAuthState, proto } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import path from 'path'
+import fs from 'fs'
 import QRCode from 'qrcode'
 import log from 'electron-log'
 import { DatabaseManager } from './database'
@@ -55,12 +56,21 @@ export class WhatsAppManager {
         }
 
         if (connection === 'close') {
-          const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut
+          const isLoggedOut = (lastDisconnect?.error as Boom)?.output?.statusCode === DisconnectReason.loggedOut
+          const shouldReconnect = !isLoggedOut
           log.info('Conexão WhatsApp fechada. Reconectar:', shouldReconnect)
 
           this.status = 'disconnected'
           this.qrCode = null
           sendToRenderer('whatsapp:status', 'disconnected')
+
+          if (isLoggedOut) {
+            // A sessão foi invalidada (logout feito pelo celular, dispositivo removido,
+            // etc.). As credenciais salvas ficam mortas — sem limpar, o próximo connect()
+            // reusa esses creds inválidos e o Baileys nunca gera um QR Code novo, só
+            // fica tentando (e falhando) usar uma sessão que a Meta já invalidou.
+            this.clearAuthState()
+          }
 
           if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++
@@ -98,13 +108,27 @@ export class WhatsAppManager {
 
   async disconnect(): Promise<void> {
     if (this.sock) {
-      await this.sock.logout()
+      try {
+        await this.sock.logout()
+      } catch (err) {
+        log.warn('Erro ao deslogar do WhatsApp (sessão provavelmente já inválida):', err)
+      }
       this.sock = null
     }
+    this.clearAuthState()
     this.status = 'disconnected'
     this.qrCode = null
     this.reconnectAttempts = 0
     sendToRenderer('whatsapp:status', 'disconnected')
+  }
+
+  private clearAuthState(): void {
+    try {
+      fs.rmSync(this.authPath, { recursive: true, force: true })
+      log.info('Credenciais do WhatsApp removidas — pronto para gerar um novo QR Code.')
+    } catch (err) {
+      log.warn('Erro ao limpar credenciais do WhatsApp:', err)
+    }
   }
 
   getStatus(): { status: string; qrCode: string | null } {

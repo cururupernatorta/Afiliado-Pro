@@ -103,9 +103,23 @@ export class TelegramManager {
 
   async disconnect(): Promise<void> {
     if (this.client) {
-      await this.client.disconnect()
+      try {
+        await this.client.disconnect()
+      } catch (err) {
+        log.warn('Erro ao desconectar do Telegram (sessão provavelmente já inválida):', err)
+      }
       this.client = null
     }
+    // Limpa a sessão salva em disco e em memória. Sem isso, um próximo connect()
+    // reusa a mesma string session (válida ou não) — se ela tiver sido invalidada
+    // por fora do app (revogada no Telegram, etc.), o login trava sem nunca pedir
+    // o código de novo.
+    try {
+      if (fs.existsSync(this.authPath)) fs.unlinkSync(this.authPath)
+    } catch (err) {
+      log.warn('Erro ao limpar session do Telegram:', err)
+    }
+    this.stringSession = new StringSession('')
     this.status = 'disconnected'
     this.codeResolve = null
     sendToRenderer('telegram:status', 'disconnected')
