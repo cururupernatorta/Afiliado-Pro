@@ -28,7 +28,11 @@ interface SendJob {
 interface InMemoryJob {
   id: string
   data: SendJob
-  status: 'waiting' | 'active' | 'completed' | 'failed'
+  // 'rescheduled': o job original de um adiamento do modo stealth (fora do
+  // horário, limite por hora, cooldown) — não foi enviado nem falhou, só virou
+  // um job novo com delay maior. Sem esse status separado, ele acabava marcado
+  // 'completed' e aparecia como "Enviado" na Fila mesmo sem ter saído.
+  status: 'waiting' | 'active' | 'completed' | 'failed' | 'rescheduled'
   createdAt: Date
   delayMs: number
 }
@@ -101,6 +105,11 @@ export class QueueManager {
     this.worker = new Worker(
       'afiliado-pro-send',
       async (job: Job<SendJob>) => {
+        // Nota: BullMQ marca esse job 'completed' assim que essa função resolve
+        // sem lançar erro, mesmo quando processJob() devolve 'deferred' (modo
+        // stealth só reagendou pra depois). O modo Memória (bem mais comum,
+        // já que o app não roda Redis por padrão) já diferencia isso — esse
+        // caso do Redis compartilha a mesma limitação de antes desse fix.
         await this.processJob(job)
       },
       {
@@ -151,13 +160,46 @@ export class QueueManager {
       }
 
       const mockJob = { id: job.id, data: job.data } as Job<SendJob>
-      await this.processJob(mockJob)
+      try {
+        const outcome = await this.processJob(mockJob)
+        // 'deferred': modo stealth adiou pra depois (fora do horário, limite
+        // por hora, cooldown) — já virou um job novo com delay maior, esse
+        // aqui não foi enviado. Marcar como 'completed' faria a Fila mostrar
+        // "Enviado" pra um produto que ainda nem saiu.
+        job.status = outcome === 'sent' ? 'completed' : 'rescheduled'
+      } catch (err) {
+        // Sem isso, um erro aqui (ex: WhatsApp desconectado no momento do envio)
+        // matava o while inteiro pra sempre — a fila parava de processar QUALQUER
+        // job daí em diante, silenciosamente, pro resto da sessão do app. Os logs
+        // de "Auto-repost: ... enviado" (que na verdade só significam "enfileirado")
+        // continuavam aparecendo normalmente, escondendo que nada mais saía de fato.
+        job.status = 'failed'
+        log.error('Job da fila em memória falhou:', err)
+        try {
+          if (this.dbManager) {
+            this.dbManager.addLog({
+              type: 'error',
+              platform: job.data.platform,
+              message: `Falha no envio: ${job.data.productTitle.substring(0, 50)}...`,
+              details: (err as Error).message,
+            })
+          }
+        } catch (logErr) {
+          // Se até registrar a falha der erro (ex: banco travado), não deixa
+          // isso voltar a matar o loop — é exatamente o bug que esse catch existe
+          // pra evitar, só que um nível mais fundo.
+          log.error('Erro ao registrar falha do job na fila:', logErr)
+        }
+      }
 
-      sendToRenderer('queue:update', this.getJobs())
+      sendToRenderer('queue:update', await this.getJobs())
     }
   }
 
-  private async processJob(job: Job<SendJob>): Promise<void> {
+  // Retorna 'sent' quando o job de fato saiu, ou 'deferred' quando o modo
+  // stealth só reagendou ele pra mais tarde (nesse caso não lançou exceção,
+  // então quem chama precisa desse valor pra não tratar adiamento como envio).
+  private async processJob(job: Job<SendJob>): Promise<'sent' | 'deferred'> {
     if (!this.sendHandler) throw new Error('Send handler nao configurado')
     if (!this.dbManager) throw new Error('Database manager nao configurado')
 
@@ -207,7 +249,7 @@ export class QueueManager {
         if (hoursToWait <= 0) hoursToWait += 24
         const delayMs = hoursToWait * 60 * 60 * 1000 + Math.random() * 30 * 60 * 1000
         await this.addJob(job.data, delayMs)
-        return
+        return 'deferred'
       }
 
       // 2. Verificar limite por hora
@@ -224,7 +266,7 @@ export class QueueManager {
         // Reagendar para daqui a 1h + jitter
         const jitter = Math.random() * config.stealth_jitter_percent / 100 * 60 * 60 * 1000
         await this.addJob(job.data, 60 * 60 * 1000 + jitter)
-        return
+        return 'deferred'
       }
 
       // 3. Verificar cooldown entre envios para o mesmo grupo
@@ -242,7 +284,7 @@ export class QueueManager {
             details: `Último envio há ${minutesSinceLastSend.toFixed(1)}min. Cooldown: ${config.stealth_cooldown_minutes}min`,
           })
           await this.addJob(job.data, waitMinutes * 60 * 1000)
-          return
+          return 'deferred'
         }
       }
 
@@ -268,6 +310,7 @@ export class QueueManager {
     })
 
     sendToRenderer('queue:update', await this.getJobs())
+    return 'sent'
   }
 
   async addJob(data: SendJob, delayMs: number = 0): Promise<any> {

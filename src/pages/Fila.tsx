@@ -66,6 +66,8 @@ export default function Fila() {
         return <CheckCircle2 className="w-4 h-4 text-green-400" />
       case 'failed':
         return <XCircle className="w-4 h-4 text-red-400" />
+      case 'rescheduled':
+        return <RefreshCw className="w-4 h-4 text-amber-400" />
       default:
         return <AlertCircle className="w-4 h-4 text-muted-foreground" />
     }
@@ -77,6 +79,9 @@ export default function Fila() {
       case 'active': return 'Enviando'
       case 'completed': return 'Enviado'
       case 'failed': return 'Falhou'
+      // Modo stealth adiou pra mais tarde (fora do horário, limite por hora,
+      // cooldown) — virou um job novo, esse aqui não foi enviado.
+      case 'rescheduled': return 'Reagendado'
       default: return status
     }
   }

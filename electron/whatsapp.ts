@@ -56,9 +56,23 @@ export class WhatsAppManager {
         }
 
         if (connection === 'close') {
-          const isLoggedOut = (lastDisconnect?.error as Boom)?.output?.statusCode === DisconnectReason.loggedOut
+          const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut
           const shouldReconnect = !isLoggedOut
           log.info('Conexão WhatsApp fechada. Reconectar:', shouldReconnect)
+
+          // Sem isso não tinha nenhum rastro de quando/por que o WhatsApp caiu —
+          // só descobria pela reclamação do usuário, sem saber se foi sessão
+          // realmente invalidada (precisa QR de novo) ou queda passageira que
+          // reconecta sozinha.
+          this.dbManager.addLog({
+            type: isLoggedOut ? 'error' : 'warning',
+            platform: 'whatsapp',
+            message: isLoggedOut
+              ? 'WhatsApp desconectado — sessão invalidada, será necessário escanear o QR Code novamente'
+              : 'WhatsApp desconectado — tentando reconectar automaticamente',
+            details: `statusCode=${statusCode ?? 'desconhecido'}, tentativa=${this.reconnectAttempts}/${this.maxReconnectAttempts}`,
+          })
 
           this.status = 'disconnected'
           this.qrCode = null

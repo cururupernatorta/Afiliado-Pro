@@ -84,10 +84,14 @@ export async function autoRepostProduct(
       }, delayMs)
     }
 
+    // "Adicionado à fila", não "enviado": o envio de verdade só é confirmado
+    // pelo log "Produto enviado" que a fila registra depois de cada job
+    // processado com sucesso — essa entrada aqui só significa que os jobs
+    // foram criados, não que já chegaram no grupo.
     dbManager.addLog({
       type: 'info',
       platform: sourcePlatform,
-      message: `Auto-repost: ${product.title} enviado para ${targets.length} grupo(s)`,
+      message: `Auto-repost: ${product.title} adicionado à fila para ${targets.length} grupo(s)`,
       details: `Plataforma: ${sourcePlatform}`,
     })
   } catch (error) {

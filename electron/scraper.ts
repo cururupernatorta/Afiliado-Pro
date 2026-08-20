@@ -353,7 +353,58 @@ export class ScraperManager {
   }
 
   private extractAliExpressFields($: cheerio.CheerioAPI, html: string) {
+    // O bloco <script type="application/ld+json"> (dados estruturados Product,
+    // schema.org — mantido pela AliExpress pra SEO/rich snippets) é bem mais
+    // confiável que og:title/og:image ou classes CSS: confirmado ao vivo que
+    // og:image na verdade aponta pra uma imagem placeholder genérica
+    // (".../HTB18eCBQXXXXXXfXXXX760XFXXXa.png" — o "XXXX" é literal, é o
+    // placeholder padrão deles) e as classes antigas (magnifier/gallery/
+    // main-image) não existem mais na página atual.
+    // schema.org permite @type como array (não só string) e image como
+    // ImageObject ({url: "..."}) além de string — sem tratar essas duas
+    // variações, JSON-LD "meio-falha" calado em algumas páginas e cai pro
+    // fallback mais fraco sem nenhum aviso.
+    const hasProductType = (type: unknown): boolean =>
+      Array.isArray(type) ? type.includes('Product') : type === 'Product'
+    const imageFieldToUrl = (img: unknown): string | undefined => {
+      if (typeof img === 'string') return img
+      if (Array.isArray(img)) return imageFieldToUrl(img[0])
+      if (img && typeof img === 'object' && typeof (img as any).url === 'string') return (img as any).url
+      return undefined
+    }
+
+    let jsonLdTitle: string | undefined
+    let jsonLdImage: string | undefined
+    $('script[type="application/ld+json"]').each((_, el) => {
+      if (jsonLdTitle && jsonLdImage) return
+      try {
+        const parsed = JSON.parse($(el).html() || '')
+        // Alguns sites embrulham os nós tipados num "@graph" em vez de um
+        // array solto ou objeto único — sem isso, um Product lá dentro nunca
+        // era encontrado.
+        const items = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.['@graph'])
+            ? parsed['@graph']
+            : [parsed]
+        for (const item of items) {
+          if (!hasProductType(item?.['@type'])) continue
+          if (!jsonLdTitle && typeof item.name === 'string') jsonLdTitle = item.name
+          if (!jsonLdImage) jsonLdImage = imageFieldToUrl(item.image)
+        }
+      } catch {
+        // dados estruturados malformados nessa página — segue pros fallbacks abaixo
+      }
+    })
+
+    // Placeholder da AliExpress sempre tem uma sequência longa de "X" literal no
+    // nome do arquivo — filtra isso de QUALQUER candidato (JSON-LD incluído: já
+    // confirmamos que og:image pode ser placeholder, não custa desconfiar dos
+    // outros também em vez de confiar cegamente só porque veio de outro lugar).
+    const isPlaceholderImage = (src?: string) => !src || /X{5,}/.test(src)
+
     const title =
+      jsonLdTitle ||
       $('meta[property="og:title"]').attr('content') ||
       $('h1[data-pl="product-title"]').text().trim() ||
       $('h1').first().text().trim() ||
@@ -417,12 +468,15 @@ export class ScraperManager {
       }
     })
 
-    const imageUrl =
-      $('meta[property="og:image"]').attr('content') ||
-      $('img[class*="magnifier"]').first().attr('src') ||
-      $('img[class*="gallery"]').first().attr('src') ||
-      $('img[class*="main-image"]').first().attr('src') ||
-      html.match(/"imageUrl":"(https?:[^"]+)"/)?.[1]
+    const imageCandidates = [
+      jsonLdImage,
+      $('meta[property="og:image"]').attr('content'),
+      $('img[class*="magnifier"]').first().attr('src'),
+      $('img[class*="gallery"]').first().attr('src'),
+      $('img[class*="main-image"]').first().attr('src'),
+      html.match(/"imageUrl":"(https?:[^"]+)"/)?.[1],
+    ]
+    const imageUrl = imageCandidates.find((c) => c && !isPlaceholderImage(c))
 
     const description =
       $('meta[property="og:description"]').attr('content') ||
