@@ -2,7 +2,7 @@ import axios from 'axios'
 import * as cheerio from 'cheerio'
 import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
-import { Product } from './database'
+import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
 import { humanizeDescription } from './humanize'
 
@@ -20,9 +20,11 @@ interface PriceExtractionOptions {
 
 export class ScraperManager {
   public affiliateManager: AffiliateManager
+  private dbManager: DatabaseManager
 
-  constructor(affiliateManager: AffiliateManager) {
+  constructor(affiliateManager: AffiliateManager, dbManager: DatabaseManager) {
     this.affiliateManager = affiliateManager
+    this.dbManager = dbManager
   }
 
   async scrapeProduct(url: string): Promise<Partial<Product>> {
@@ -430,12 +432,31 @@ export class ScraperManager {
     return { title, price, originalPrice, imageUrl, description }
   }
 
-  private async scrapeAliExpress(url: string): Promise<Partial<Product>> {
+  private async scrapeAliExpress(rawUrl: string): Promise<Partial<Product>> {
     let title = '', price = 0, originalPrice = 0, imageUrl: string | undefined, description = ''
+    // Trilha de diagnóstico: quando isso falha em produção não tem como reproduzir
+    // localmente (rede/IP/sessão diferentes do usuário) — sem isso, cada falha só
+    // dá o alerta genérico e nenhuma pista de qual etapa realmente travou. Registrado
+    // como log de erro no app (visível em Logs) só quando o resultado final falha.
+    const trail: string[] = []
+
+    // Link curto (s.click.aliexpress.com, a.aliexpress.com) renderizado direto com
+    // user-agent mobile costuma cair numa página genérica de "melhores ofertas" em
+    // vez do produto — resolve pro link canônico do produto primeiro, com o mesmo
+    // resolvedor já usado na geração do link de afiliado (que usa UA desktop e
+    // também revela quando o link já está morto/expirado).
+    let url = rawUrl
+    try {
+      url = await this.affiliateManager.resolveAliExpressUrl(rawUrl)
+      if (url !== rawUrl) trail.push(`resolvido: ${rawUrl} -> ${url}`)
+    } catch (err) {
+      trail.push(`resolução de link falhou, usando original: ${(err as Error).message}`)
+    }
 
     try {
       const { $, html } = await this.fetchPage(url, true)
-      if (!this.looksBlocked(html)) {
+      const blocked = this.looksBlocked(html)
+      if (!blocked) {
         const extracted = this.extractAliExpressFields($, html)
         title = extracted.title
         price = extracted.price
@@ -443,7 +464,9 @@ export class ScraperManager {
         imageUrl = extracted.imageUrl
         description = extracted.description
       }
+      trail.push(`estático: bloqueado=${blocked}, preço=${price}, ${html.length} bytes`)
     } catch (err) {
+      trail.push(`estático: erro — ${(err as Error).message}`)
       log.warn('Scraping estático do AliExpress falhou:', (err as Error).message)
     }
 
@@ -454,16 +477,16 @@ export class ScraperManager {
     // dados de preço aparecerem no DOM, em vez de uma pausa fixa curta.
     if (price === 0) {
       try {
-        const { $, html } = await this.fetchPageHeadless(url, true, {
-          waitMs: 12000,
-          // Os campos JSON antigos (salePrice, skuPrice...) já não aparecem mais em
-          // várias páginas de produto — o React app atual só desenha "R$X,XX" direto
-          // num span com classe gerada. Sem esse padrão como alternativa, o polling
-          // nunca detectava "pronto" e sempre esperava o teto inteiro, cortando a
-          // renderização antes da hora em conexões mais lentas.
-          readyPattern: /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice|R\$\s?\d/,
-        })
+        // Os campos JSON antigos (salePrice, skuPrice...) já não aparecem mais em
+        // várias páginas de produto — o React app atual só desenha "R$X,XX" direto
+        // num span com classe gerada. Sem esse padrão como alternativa, o polling
+        // nunca detectava "pronto" e sempre esperava o teto inteiro, cortando a
+        // renderização antes da hora em conexões mais lentas.
+        const readyPattern = /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice|R\$\s?\d/
+        const { $, html } = await this.fetchPageHeadless(url, true, { waitMs: 12000, readyPattern })
+        const matched = readyPattern.test(html)
         const extracted = this.extractAliExpressFields($, html)
+        trail.push(`headless: sinal de "pronto" encontrado=${matched}, preço extraído=${extracted.price}, ${html.length} bytes`)
         if (extracted.price > 0) {
           title = extracted.title || title
           price = extracted.price
@@ -472,6 +495,7 @@ export class ScraperManager {
           description = extracted.description || description
         }
       } catch (err) {
+        trail.push(`headless: erro — ${(err as Error).message}`)
         log.warn('Fallback headless do AliExpress também falhou:', (err as Error).message)
       }
     }
@@ -479,6 +503,16 @@ export class ScraperManager {
     log.info(`Scrape AliExpress: title="${title?.substring(0, 50)}...", price=${price}, orig=${originalPrice}`)
 
     if (price === 0) {
+      try {
+        this.dbManager.addLog({
+          type: 'error',
+          platform: 'system',
+          message: 'Falha ao extrair produto do AliExpress',
+          details: trail.join(' | '),
+        })
+      } catch (err) {
+        log.warn('Erro ao registrar log de diagnóstico do AliExpress:', err)
+      }
       throw new Error(
         'Não consegui extrair o preço do AliExpress, mesmo com o browser headless. Use o campo ' +
         '"Link de Afiliado Manual" e informe o preço manualmente ao cadastrar o produto.'

@@ -175,7 +175,7 @@ app.whenReady().then(async () => {
     queueManager = new QueueManager()
     queueManager.setDatabaseManager(dbManager)
     affiliateManager = new AffiliateManager(dbManager)
-    scraperManager = new ScraperManager(affiliateManager)
+    scraperManager = new ScraperManager(affiliateManager, dbManager)
     whatsappManager = new WhatsAppManager(dbManager, queueManager, scraperManager, userDataPath)
     telegramManager = new TelegramManager(dbManager, queueManager, scraperManager, userDataPath)
 

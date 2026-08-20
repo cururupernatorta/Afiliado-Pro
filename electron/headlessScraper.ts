@@ -1,5 +1,9 @@
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, session } from 'electron'
 import log from 'electron-log'
+
+// Quantas sessões descartáveis distintas ficam vivas ao mesmo tempo — ver
+// comentário sobre vazamento de memória em `renderPageHtml`.
+const PARTITION_POOL_SIZE = 8
 
 interface RenderOptions {
   /**
@@ -32,6 +36,17 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
   const { waitMs = 3000, timeoutMs = 25000, userAgent, readyPattern } = options
 
   let win: BrowserWindow | null = null
+  // Partição descartável (não prefixada com "persist:") em vez da sessão padrão do
+  // Electron, que é a MESMA sessão compartilhada por toda a janela principal do app.
+  // Sem isso, cookies e sinais de fingerprint de raspagens anteriores se acumulam
+  // numa sessão só ao longo do uso do app, e sites com detecção de bot (AliExpress)
+  // podem ir degradando as respostas dessa sessão específica com o tempo, mesmo
+  // quando o mesmo request funcionaria normalmente numa sessão limpa.
+  // Roda num pool fixo de nomes (em vez de um UUID novo a cada chamada) porque o
+  // Electron nunca libera o objeto Session de uma partição depois de criada — um
+  // nome novo por chamada vazaria memória lentamente num bot que roda dias a fio.
+  // clearStorageData() abaixo já limpa cookies/cache antes de cada uso do pool.
+  const partitionName = `scrape-${Math.floor(Math.random() * PARTITION_POOL_SIZE)}`
 
   const renderPromise = (async (): Promise<string> => {
     win = new BrowserWindow({
@@ -40,6 +55,7 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
         nodeIntegration: false,
         contextIsolation: true,
         images: false, // não carrega imagens - só queremos o HTML/DOM, isso acelera bastante
+        partition: partitionName,
       },
     })
 
@@ -83,6 +99,11 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
   } finally {
     if (win && !(win as BrowserWindow).isDestroyed()) {
       ;(win as BrowserWindow).destroy()
+    }
+    try {
+      await session.fromPartition(partitionName).clearStorageData()
+    } catch (err) {
+      log.warn('Erro ao limpar sessão descartável do headless browser:', err)
     }
   }
 }

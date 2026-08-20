@@ -186,7 +186,9 @@ export class AffiliateManager {
   // /item/NNNN.html primeiro, igual já fazemos com o link curto da Amazon.
   private readonly ALIEXPRESS_CANONICAL_PATTERN = /aliexpress\.[a-z.]+\/item\/\d+\.html/i
 
-  private async resolveAliExpressUrl(url: string): Promise<string> {
+  // Público: o ScraperManager também usa isso antes de raspar, pra não tentar
+  // renderizar um link curto direto (ver uso em scraper.ts).
+  async resolveAliExpressUrl(url: string): Promise<string> {
     if (this.ALIEXPRESS_CANONICAL_PATTERN.test(url)) return url
     return this.followRedirects(url)
   }
