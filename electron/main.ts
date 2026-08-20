@@ -294,8 +294,8 @@ app.on('before-quit', async () => {
   try {
     await queueManager?.close()
     dbManager?.close()
-    await whatsappManager?.disconnect()
-    await telegramManager?.disconnect()
+    whatsappManager?.closeConnection()
+    await telegramManager?.closeConnection()
   } catch (error) {
     log.error('Erro ao encerrar:', error)
   }

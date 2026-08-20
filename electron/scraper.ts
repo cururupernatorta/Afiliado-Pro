@@ -455,8 +455,13 @@ export class ScraperManager {
     if (price === 0) {
       try {
         const { $, html } = await this.fetchPageHeadless(url, true, {
-          waitMs: 9000,
-          readyPattern: /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice/,
+          waitMs: 12000,
+          // Os campos JSON antigos (salePrice, skuPrice...) já não aparecem mais em
+          // várias páginas de produto — o React app atual só desenha "R$X,XX" direto
+          // num span com classe gerada. Sem esse padrão como alternativa, o polling
+          // nunca detectava "pronto" e sempre esperava o teto inteiro, cortando a
+          // renderização antes da hora em conexões mais lentas.
+          readyPattern: /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice|R\$\s?\d/,
         })
         const extracted = this.extractAliExpressFields($, html)
         if (extracted.price > 0) {

@@ -122,6 +122,23 @@ export class WhatsAppManager {
     sendToRenderer('whatsapp:status', 'disconnected')
   }
 
+  // Fecha a conexão sem deslogar nem apagar as credenciais — usado quando o
+  // app está fechando (troca de versão, fechar a janela), não quando o usuário
+  // pede pra desconectar de propósito. disconnect() faz logout de verdade e
+  // apaga a sessão salva; chamar isso a cada fechamento do app forçava o
+  // usuário a escanear o QR Code de novo toda vez que uma atualização reiniciava
+  // o programa.
+  closeConnection(): void {
+    if (this.sock) {
+      try {
+        this.sock.end(undefined)
+      } catch (err) {
+        log.warn('Erro ao fechar conexão do WhatsApp:', err)
+      }
+      this.sock = null
+    }
+  }
+
   private clearAuthState(): void {
     try {
       fs.rmSync(this.authPath, { recursive: true, force: true })
@@ -197,7 +214,16 @@ export class WhatsAppManager {
       throw new Error('Não consegui encontrar esse canal. Confira o link de convite.')
     }
 
-    await this.sock.newsletterFollow(metadata.id)
+    // O passo que importa é achar o ID real do canal (feito acima) — seguir é
+    // só pra garantir o recebimento das mensagens. Se a conta já segue esse
+    // canal, o WhatsApp responde de um jeito que o Baileys não reconhece e
+    // isso derruba a chamada com um erro genérico ("unexpected response
+    // structure"); não deixa isso travar o cadastro do canal.
+    try {
+      await this.sock.newsletterFollow(metadata.id)
+    } catch (err) {
+      log.warn(`Não consegui confirmar "seguir" o canal ${metadata.name} (pode já estar seguindo):`, (err as Error).message)
+    }
 
     this.dbManager.saveGroup({
       platform: 'whatsapp',

@@ -125,6 +125,22 @@ export class TelegramManager {
     sendToRenderer('telegram:status', 'disconnected')
   }
 
+  // Fecha a conexão sem apagar a session salva — usado quando o app está
+  // fechando (troca de versão, fechar a janela), não quando o usuário pede
+  // pra desconectar de propósito. disconnect() apaga a session em disco;
+  // chamar isso a cada fechamento do app forçava reautenticar com código por
+  // SMS toda vez que uma atualização reiniciava o programa.
+  async closeConnection(): Promise<void> {
+    if (this.client) {
+      try {
+        await this.client.disconnect()
+      } catch (err) {
+        log.warn('Erro ao fechar conexão do Telegram:', err)
+      }
+      this.client = null
+    }
+  }
+
   getStatus(): { status: string } {
     return { status: this.status }
   }
