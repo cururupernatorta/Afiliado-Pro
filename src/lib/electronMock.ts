@@ -17,6 +17,9 @@ export function installElectronMockIfNeeded() {
     whatsappToggleMonitor: async () => {},
     whatsappSendProducts: async () => {},
     whatsappGetQrCode: async () => null,
+    whatsappAddChannel: async () => ({ id: 'mock@newsletter', name: 'Canal de teste' }),
+
+    groupGetSaved: async () => [],
 
     telegramConnect: async () => {},
     telegramDisconnect: async () => {},

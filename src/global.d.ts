@@ -7,6 +7,9 @@ export interface ElectronAPI {
   whatsappToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
   whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string; templateText?: string }) => Promise<void>
   whatsappGetQrCode: () => Promise<string | null>
+  whatsappAddChannel: (inviteLinkOrCode: string) => Promise<{ id: string; name: string }>
+
+  groupGetSaved: (platform: 'whatsapp' | 'telegram') => Promise<any[]>
 
   // Telegram
   telegramConnect: (phoneNumber: string) => Promise<void>

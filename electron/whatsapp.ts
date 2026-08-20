@@ -155,17 +155,59 @@ export class WhatsAppManager {
   }
 
   async toggleMonitor(groupId: string, enabled: boolean): Promise<void> {
+    // Grupos normais são resolvidos pela lista ao vivo do Baileys. Canais de
+    // transmissão (@newsletter) não aparecem nela — o Baileys não tem uma API
+    // pra listar canais seguidos —, então pra esses usamos o nome que já ficou
+    // salvo no banco quando o canal foi adicionado via link de convite.
     const groups = await this.getGroups()
-    const group = groups.find((g) => g.id === groupId)
-    if (!group) throw new Error('Grupo não encontrado')
+    const liveGroup = groups.find((g) => g.id === groupId)
+
+    if (liveGroup) {
+      this.dbManager.saveGroup({
+        platform: 'whatsapp',
+        group_id: groupId,
+        group_name: liveGroup.name,
+        monitored: enabled,
+      })
+      log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo WhatsApp: ${liveGroup.name}`)
+      return
+    }
+
+    const saved = this.dbManager.getGroups('whatsapp').find((g) => g.group_id === groupId)
+    if (!saved) throw new Error('Grupo ou canal não encontrado')
+
+    this.dbManager.toggleGroupMonitor('whatsapp', groupId, enabled)
+    log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para canal WhatsApp: ${saved.group_name}`)
+  }
+
+  // Não existe API no Baileys pra listar todos os canais que a conta segue —
+  // só dá pra resolver um canal específico a partir do link/código de convite.
+  // Segue o canal (necessário pra receber as mensagens dele) e já salva como
+  // monitorado, já que o propósito de adicionar é justamente capturar ofertas.
+  async addChannel(inviteLinkOrCode: string): Promise<{ id: string; name: string }> {
+    if (!this.sock || this.status !== 'connected') {
+      throw new Error('WhatsApp não está conectado')
+    }
+
+    const code = inviteLinkOrCode.trim().split('/').pop()?.split('?')[0]
+    if (!code) throw new Error('Link de convite do canal inválido')
+
+    const metadata = await this.sock.newsletterMetadata('invite', code)
+    if (!metadata?.id) {
+      throw new Error('Não consegui encontrar esse canal. Confira o link de convite.')
+    }
+
+    await this.sock.newsletterFollow(metadata.id)
 
     this.dbManager.saveGroup({
       platform: 'whatsapp',
-      group_id: groupId,
-      group_name: group.name,
-      monitored: enabled,
+      group_id: metadata.id,
+      group_name: metadata.name || 'Canal sem nome',
+      monitored: true,
     })
-    log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo WhatsApp: ${group.name}`)
+
+    log.info(`Canal WhatsApp adicionado e seguido: ${metadata.name} (${metadata.id})`)
+    return { id: metadata.id, name: metadata.name || 'Canal sem nome' }
   }
 
   async sendProducts(groupIds: string[], productIds: number[], extra?: SendProductsExtra): Promise<void> {

@@ -9,6 +9,9 @@ export interface ElectronAPI {
   whatsappToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
   whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: SendProductsExtra) => Promise<void>
   whatsappGetQrCode: () => Promise<string | null>
+  whatsappAddChannel: (inviteLinkOrCode: string) => Promise<{ id: string; name: string }>
+
+  groupGetSaved: (platform: 'whatsapp' | 'telegram') => Promise<any[]>
 
   telegramConnect: (phoneNumber: string) => Promise<void>
   telegramDisconnect: () => Promise<void>
@@ -78,6 +81,9 @@ const api: ElectronAPI = {
   whatsappToggleMonitor: (groupId, enabled) => ipcRenderer.invoke('whatsapp:toggleMonitor', groupId, enabled),
   whatsappSendProducts: (groupIds, productIds, extra) => ipcRenderer.invoke('whatsapp:sendProducts', groupIds, productIds, extra),
   whatsappGetQrCode: () => ipcRenderer.invoke('whatsapp:getQrCode'),
+  whatsappAddChannel: (inviteLinkOrCode) => ipcRenderer.invoke('whatsapp:addChannel', inviteLinkOrCode),
+
+  groupGetSaved: (platform) => ipcRenderer.invoke('group:getSaved', platform),
 
   telegramConnect: (phoneNumber) => ipcRenderer.invoke('telegram:connect', phoneNumber),
   telegramDisconnect: () => ipcRenderer.invoke('telegram:disconnect'),

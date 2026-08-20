@@ -319,6 +319,9 @@ const setupIpcHandlers = (): void => {
     whatsappManager.sendProducts(groupIds, productIds, extra)
   )
   ipcMain.handle('whatsapp:getQrCode', () => whatsappManager.getQrCode())
+  ipcMain.handle('whatsapp:addChannel', (_, inviteLinkOrCode: string) => whatsappManager.addChannel(inviteLinkOrCode))
+
+  ipcMain.handle('group:getSaved', (_, platform: 'whatsapp' | 'telegram') => dbManager.getGroups(platform))
 
   ipcMain.handle('telegram:connect', (_, phoneNumber: string) => telegramManager.connect(phoneNumber))
   ipcMain.handle('telegram:disconnect', () => telegramManager.disconnect())

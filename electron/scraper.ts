@@ -382,7 +382,11 @@ export class ScraperManager {
         '[class*="price--"]',
         '[class*="ProductPrice"]',
       ],
-      bodyFallback: true,
+      // Sem bodyFallback aqui de propósito: numa página bloqueada/redirecionada
+      // (que não é o produto real), o body inteiro pode ter QUALQUER "R$ X" —
+      // banner de frete grátis, carrossel de recomendados, conversor de moeda —
+      // e isso já causou captura de produto fantasma (título genérico + preço de
+      // outra coisa). Melhor falhar alto e pedir cadastro manual do que inventar.
     })
 
     // Preço original: só usa se achar explicitamente nos scripts da página. Nunca

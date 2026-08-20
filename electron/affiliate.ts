@@ -113,9 +113,13 @@ export class AffiliateManager {
     return match ? match[1].toUpperCase() : null
   }
 
-  private async resolveAmazonRedirect(url: string): Promise<string> {
+  // Segue a cadeia de redirecionamento HTTP (sem executar JS) até o destino final,
+  // usado tanto pra resolver links curtos da Amazon quanto do AliExpress antes de
+  // gerar o link de afiliado — link curto de outra pessoa aponta pra tag/tracking
+  // ID dela, então precisamos do produto real por trás do redirecionamento.
+  private async followRedirects(url: string, maxHops = 5): Promise<string> {
     let current = url
-    for (let hop = 0; hop < 5; hop++) {
+    for (let hop = 0; hop < maxHops; hop++) {
       try {
         const response = await axios.get(current, {
           maxRedirects: 0,
@@ -132,11 +136,15 @@ export class AffiliateManager {
         }
         break
       } catch (err) {
-        log.warn('Falha ao resolver redirecionamento da Amazon:', (err as Error).message)
+        log.warn('Falha ao resolver redirecionamento:', (err as Error).message)
         break
       }
     }
     return current
+  }
+
+  private async resolveAmazonRedirect(url: string): Promise<string> {
+    return this.followRedirects(url)
   }
 
   private async convertAmazon(url: string, config: any): Promise<string | null> {
@@ -171,6 +179,18 @@ export class AffiliateManager {
     }
   }
 
+  // Links de canais de promoção costumam já vir num link curto de afiliado de
+  // outra pessoa (s.click.aliexpress.com, a.aliexpress.com) ou num deep-link de
+  // app. Passar isso direto pro "aliexpress.affiliate.link.generate" produz um
+  // link genérico que não aponta pro produto — resolve pro link canônico
+  // /item/NNNN.html primeiro, igual já fazemos com o link curto da Amazon.
+  private readonly ALIEXPRESS_CANONICAL_PATTERN = /aliexpress\.[a-z.]+\/item\/\d+\.html/i
+
+  private async resolveAliExpressUrl(url: string): Promise<string> {
+    if (this.ALIEXPRESS_CANONICAL_PATTERN.test(url)) return url
+    return this.followRedirects(url)
+  }
+
   // ==================== ALIEXPRESS ====================
   // 1) Endpoint correto é /sync, não /rest.
   // 2) tracking_id É DIFERENTE da App Key. Precisa ser criado em:
@@ -190,6 +210,7 @@ export class AffiliateManager {
       return null
     }
     try {
+      const resolvedUrl = await this.resolveAliExpressUrl(url)
       const timestamp = Date.now() // milissegundos, não segundos
       const params: Record<string, any> = {
         app_key: config.aliexpress_app_key,
@@ -199,7 +220,7 @@ export class AffiliateManager {
         sign_method: 'sha256',
         tracking_id: config.aliexpress_tracking_id,
         promotion_link_type: 0,
-        source_values: url,
+        source_values: resolvedUrl,
       }
 
       const sortedKeys = Object.keys(params).sort()
