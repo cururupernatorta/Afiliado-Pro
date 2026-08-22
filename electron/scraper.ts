@@ -611,14 +611,18 @@ export class ScraperManager {
             const originalPrice = this.parsePrice($amazon(el).find('.dcl-product-price-old .a-offscreen').first().text())
             const imageUrl = $amazon(el).find('.dcl-dynamic-image').first().attr('src')
             const link = $amazon(el).find('.dcl-product-link').first().attr('href')
-            if (title && link && price > 0) {
+            // A página "deals" da Amazon lista o carrossel inteiro, não só o que tem
+            // desconto de verdade — sem exigir originalPrice > price aqui (e não só na
+            // hora de formatar o texto), qualquer produto do carrossel virava "oferta"
+            // pro usuário, inclusive coisa com preço normal ou mais caro que o normal.
+            if (title && link && price > 0 && originalPrice > price) {
               const fullUrl = link.startsWith('http') ? link : `https://www.amazon.com.br${link}`
               const matchesNiche = keywords.some((k) => title.toLowerCase().includes(k.toLowerCase()))
               if (matchesNiche) {
                 results.push({
                   title,
                   price,
-                  original_price: originalPrice > price ? originalPrice : undefined,
+                  original_price: originalPrice,
                   image_url: imageUrl,
                   description: humanizeDescription({ title, store: 'amazon', price, original_price: originalPrice }),
                   original_url: fullUrl,
@@ -642,13 +646,15 @@ export class ScraperManager {
             const price = this.parsePrice($ml(el).find('.poly-price__current .andes-money-amount__fraction').first().text())
             const originalPrice = this.parsePrice($ml(el).find('.poly-price__labels .andes-money-amount__fraction').first().text())
             const imageUrl = $ml(el).find('.poly-component__picture').first().attr('src')
-            if (title && link && price > 0) {
+            // Mesma lógica da Amazon: a página "ofertas" lista muita coisa sem desconto
+            // real — só captura se o preço riscado for de fato maior que o atual.
+            if (title && link && price > 0 && originalPrice > price) {
               const matchesNiche = keywords.some((k) => title.toLowerCase().includes(k.toLowerCase()))
               if (matchesNiche) {
                 results.push({
                   title,
                   price,
-                  original_price: originalPrice > price ? originalPrice : undefined,
+                  original_price: originalPrice,
                   image_url: imageUrl,
                   description: humanizeDescription({ title, store: 'mercado_livre', price, original_price: originalPrice }),
                   original_url: link,
@@ -697,38 +703,27 @@ export class ScraperManager {
           break
         }
 
-        // Idem AliExpress: busca bloqueia estático, e a página de produto já virou
-        // 100% client-side (ver scrapeAliExpress) — a de busca é ainda mais protegida.
+        // Busca via API oficial de afiliado, não raspagem — ver comentário em
+        // affiliate.ts's queryAliExpressDeals pro porquê (busca raspada é
+        // fragilíssima, bloqueia com captcha, e nunca filtrava desconto real).
         case 'aliexpress': {
-          for (const keyword of keywords.slice(0, 2)) {
-            const aliUrl = `https://pt.aliexpress.com/wholesale?SearchText=${encodeURIComponent(keyword)}&sortType=total_tranpro_desc`
-            try {
-              const { $: $ali } = await this.fetchPageHeadless(aliUrl, true, {
-                waitMs: 9000,
-                readyPattern: /data-product-id/,
-              })
-              $ali('[data-product-id]').slice(0, 5).each((_, el) => {
-                const title = $ali(el).find('.multi--titleText--').text().trim()
-                const priceText = $ali(el).find('.multi--price--').text()
-                const price = this.parsePrice(priceText || '')
-                const imageUrl = $ali(el).find('img').first().attr('src')
-                const link = $ali(el).find('a').first().attr('href')
-                if (title && link && price > 0) {
-                  const fullUrl = link.startsWith('http') ? link : `https:${link}`
-                  results.push({
-                    title,
-                    price,
-                    image_url: imageUrl,
-                    description: humanizeDescription({ title, store: 'aliexpress', price }),
-                    original_url: fullUrl,
-                    store: 'aliexpress',
-                    source: 'manual',
-                  })
-                }
-              })
-            } catch (e) {
-              log.warn(`Erro ao buscar AliExpress para "${keyword}":`, e)
-            }
+          const deals = await this.affiliateManager.queryAliExpressDeals(keywords)
+          for (const deal of deals) {
+            results.push({
+              title: deal.title,
+              price: deal.price,
+              original_price: deal.original_price,
+              image_url: deal.image_url,
+              description: humanizeDescription({
+                title: deal.title,
+                store: 'aliexpress',
+                price: deal.price,
+                original_price: deal.original_price,
+              }),
+              original_url: deal.original_url,
+              store: 'aliexpress',
+              source: 'manual',
+            })
           }
           break
         }

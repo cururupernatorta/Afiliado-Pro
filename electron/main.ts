@@ -292,10 +292,19 @@ app.whenReady().then(async () => {
 app.on('before-quit', async () => {
   log.info('Encerrando Afiliado Pro...')
   try {
-    await queueManager?.close()
-    dbManager?.close()
+    // WhatsApp/Telegram primeiro, e em paralelo: no desligamento do Windows (ao
+    // contrário de um "Sair" manual), o SO só dá um tempo curto pra encerrar
+    // antes de matar o processo à força. Se o fechamento das sessões ficasse
+    // por último atrás de queueManager/dbManager, um kill no meio do caminho
+    // podia interromper a gravação das credenciais do WhatsApp/Telegram e
+    // corromper o arquivo — daí precisar escanear o QR Code de novo mesmo sem
+    // ter feito logout de verdade.
     whatsappManager?.closeConnection()
-    await telegramManager?.closeConnection()
+    await Promise.all([
+      telegramManager?.closeConnection(),
+      queueManager?.close(),
+    ])
+    dbManager?.close()
   } catch (error) {
     log.error('Erro ao encerrar:', error)
   }

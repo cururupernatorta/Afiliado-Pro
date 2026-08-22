@@ -22,7 +22,7 @@ import {
   ChevronUp,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
-import { formatCurrency, truncate } from '../lib/utils'
+import { formatCurrency, truncate, parseDbDate } from '../lib/utils'
 
 // ── tipos locais ─────────────────────────────────────────────────────────────
 interface ScrapedData {
@@ -397,7 +397,7 @@ export default function Produtos() {
                             {truncate(product.title, 40)}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {new Date(product.created_at).toLocaleDateString('pt-BR')}
+                            {parseDbDate(product.created_at).toLocaleDateString('pt-BR')}
                           </p>
                         </div>
                       </div>

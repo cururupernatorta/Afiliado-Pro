@@ -253,6 +253,120 @@ export class AffiliateManager {
     }
   }
 
+  // Busca de ofertas via API oficial de afiliado (aliexpress.affiliate.hotproduct.query)
+  // em vez de raspar a página de busca do site. A busca raspada (/wholesale?SearchText=...)
+  // é fragilíssima — bloqueia com captcha com frequência e nunca trouxe preço original pra
+  // comparar, então qualquer produto que batesse a palavra-chave virava "oferta" mesmo sem
+  // desconto nenhum. A API usa as MESMAS credenciais já configuradas pra gerar link de
+  // afiliado (App Key/Secret + Tracking ID), devolve preço/título/foto estruturados direto
+  // da AliExpress (sem parsing de HTML) e nunca é bloqueada por anti-bot.
+  async queryAliExpressDeals(keywords: string[]): Promise<{
+    title: string
+    price: number
+    original_price?: number
+    image_url?: string
+    original_url: string
+  }[]> {
+    const config = this.dbManager.getConfig()
+    if (!config.aliexpress_app_key || !config.aliexpress_app_secret) {
+      log.warn('Credenciais AliExpress não configuradas — busca de ofertas pulada')
+      return []
+    }
+    if (!config.aliexpress_tracking_id) {
+      log.warn('Tracking ID do AliExpress não configurado — busca de ofertas pulada')
+      return []
+    }
+
+    const allDeals: { title: string; price: number; original_price?: number; image_url?: string; original_url: string; discountPercent: number }[] = []
+
+    for (const keyword of keywords.slice(0, 2)) {
+      try {
+        const timestamp = Date.now()
+        const params: Record<string, any> = {
+          app_key: config.aliexpress_app_key,
+          method: 'aliexpress.affiliate.hotproduct.query',
+          timestamp,
+          v: '2.0',
+          sign_method: 'sha256',
+          tracking_id: config.aliexpress_tracking_id,
+          keywords: keyword,
+          page_no: 1,
+          page_size: 20,
+          target_currency: 'BRL',
+          target_language: 'PT',
+          ship_to_country: 'BR',
+        }
+        const sortedKeys = Object.keys(params).sort()
+        const signString = sortedKeys.map((k) => `${k}${params[k]}`).join('')
+        params.sign = crypto.createHmac('sha256', config.aliexpress_app_secret).update(signString).digest('hex').toUpperCase()
+
+        const response = await axios.get('https://api-sg.aliexpress.com/sync', { params, timeout: 15000 })
+        const result = response.data
+        const products =
+          result?.aliexpress_affiliate_hotproduct_query_response?.resp_result?.result?.products?.product
+        if (!Array.isArray(products) || products.length === 0) {
+          const rawTrail = JSON.stringify(result).substring(0, 500)
+          log.warn(`AliExpress: sem produtos pra "${keyword}". Resposta: ${rawTrail}`)
+          // Diagnóstico visível em Logs — sem poder testar essa chamada com
+          // credenciais reais antes de publicar, se o formato da resposta for
+          // diferente do esperado é assim que dá pra saber, em vez de só ficar
+          // sem resultado nenhum e sem pista de por quê.
+          this.dbManager.addLog({
+            type: 'warning',
+            platform: 'system',
+            message: `AliExpress: busca de ofertas não retornou produtos pra "${keyword}"`,
+            details: rawTrail,
+          })
+          continue
+        }
+
+        let matchedAny = false
+        for (const p of products) {
+          const title = p.product_title
+          const price = parseFloat(p.target_sale_price ?? p.sale_price ?? '0')
+          const originalPrice = parseFloat(p.target_original_price ?? p.original_price ?? '0')
+          const url = p.product_detail_url || p.productDetailUrl
+          const imageUrl = p.product_main_image_url || p.productMainImageUrl
+          // Só é "oferta" de verdade se o preço original for maior que o atual —
+          // mesmo critério já aplicado pra Amazon/Mercado Livre.
+          if (!title || !url || !(price > 0)) continue
+          matchedAny = true
+          if (!(originalPrice > price)) continue
+          allDeals.push({
+            title,
+            price,
+            original_price: originalPrice,
+            image_url: imageUrl,
+            original_url: url,
+            discountPercent: (1 - price / originalPrice) * 100,
+          })
+        }
+        if (!matchedAny) {
+          const rawTrail = JSON.stringify(products[0]).substring(0, 500)
+          log.warn(`AliExpress: produtos vieram pra "${keyword}" mas nenhum campo bateu. Exemplo: ${rawTrail}`)
+          this.dbManager.addLog({
+            type: 'warning',
+            platform: 'system',
+            message: `AliExpress: resposta da busca teve produtos, mas os campos esperados (título/preço/link) não bateram para "${keyword}"`,
+            details: rawTrail,
+          })
+        }
+      } catch (error: any) {
+        log.error(`Erro ao buscar ofertas AliExpress para "${keyword}":`, error?.response?.data || error.message)
+        this.dbManager.addLog({
+          type: 'error',
+          platform: 'system',
+          message: `Erro ao buscar ofertas AliExpress para "${keyword}"`,
+          details: JSON.stringify(error?.response?.data || error.message).substring(0, 500),
+        })
+      }
+    }
+
+    // Maior desconto primeiro — é isso que "melhores ofertas" quer dizer aqui.
+    allDeals.sort((a, b) => b.discountPercent - a.discountPercent)
+    return allDeals.slice(0, 5).map(({ discountPercent, ...deal }) => deal)
+  }
+
   detectStore(url: string): 'shopee' | 'mercado_livre' | 'amazon' | 'aliexpress' | null {
     const lowerUrl = url.toLowerCase()
     if (lowerUrl.includes('shopee')) return 'shopee'

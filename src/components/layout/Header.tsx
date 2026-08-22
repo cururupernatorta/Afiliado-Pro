@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Bell, Search, Menu, CheckCircle2, XCircle, AlertTriangle, Info } from 'lucide-react'
 import { useAppStore, LogEntry } from '../../stores/appStore'
+import { parseDbDate } from '../../lib/utils'
 
 const AppLogo = () => (
   <svg viewBox="0 0 256 256" className="w-8 h-8" aria-label="Afiliado Pro">
@@ -17,7 +18,7 @@ const AppLogo = () => (
 )
 
 function timeAgo(dateString: string): string {
-  const diffMs = Date.now() - new Date(dateString).getTime()
+  const diffMs = Date.now() - parseDbDate(dateString).getTime()
   const minutes = Math.floor(diffMs / 60000)
   if (minutes < 1) return 'agora'
   if (minutes < 60) return `${minutes} min atrás`
