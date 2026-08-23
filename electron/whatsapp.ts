@@ -107,10 +107,22 @@ export class WhatsAppManager {
       this.sock.ev.on('creds.update', saveCreds)
 
       this.sock.ev.on('messages.upsert', async (m) => {
-        if (m.type !== 'notify') return
+        // Mensagem de grupo normal chega com type "notify" — o filtro original
+        // evitava reprocessar a sincronização de histórico antiga (que vem com
+        // outro type) toda vez que reconecta. Mas o Baileys manda TODA mensagem
+        // de canal de transmissão com type "append", sempre, mesmo em tempo
+        // real (não é sinal de histórico antigo pra canal) — com o filtro
+        // batendo só em "notify", canal nunca capturava nada, ou capturava só
+        // por acaso quando batch de tipos diferentes vinha misturado. Mantém o
+        // filtro de histórico pra grupo, mas deixa passar "append" quando a
+        // mensagem é de um canal (@newsletter).
+        const messages = m.type === 'notify'
+          ? m.messages
+          : m.messages.filter((msg) => msg.key.remoteJid?.endsWith('@newsletter'))
+        if (messages.length === 0) return
         // Em paralelo: um burst de várias mensagens não deve esperar a
         // raspagem+repost completo de uma pra só então começar a próxima.
-        await Promise.all(m.messages.map((msg) => this.handleIncomingMessage(msg)))
+        await Promise.all(messages.map((msg) => this.handleIncomingMessage(msg)))
       })
 
     } catch (error) {

@@ -274,8 +274,21 @@ app.whenReady().then(async () => {
         const cfg = dbManager.getConfig()
         if (!cfg.auto_scrape_enabled || !cfg.niche) return
 
+        // A busca de cada loja só faz sentido se der pra gerar link de afiliado
+        // dela depois — sem credencial, o produto capturado ficaria com o link
+        // original (sem comissão nenhuma). Antes a busca rodava pras 4 lojas
+        // sempre, mesmo sem credencial configurada: remover a credencial de uma
+        // loja em Configurações não parava a captura dela, só a geração do link.
+        const storeHasCredentials: Record<string, boolean> = {
+          amazon: !!cfg.amazon_tag,
+          mercado_livre: !!cfg.mercado_livre_affiliate_id,
+          shopee: !!(cfg.shopee_app_id && cfg.shopee_app_secret),
+          aliexpress: !!(cfg.aliexpress_app_key && cfg.aliexpress_app_secret && cfg.aliexpress_tracking_id),
+        }
+
         const stores = ['amazon', 'mercado_livre', 'shopee', 'aliexpress']
         for (const store of stores) {
+          if (!storeHasCredentials[store]) continue
           const deals = await scraperManager.searchDeals(cfg.niche, store)
           for (const deal of deals) {
             if (!dbManager.productExistsByUrl(deal.original_url!)) {
