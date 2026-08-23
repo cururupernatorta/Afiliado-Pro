@@ -214,6 +214,27 @@ export default function Configuracoes() {
     setSaved(false)
   }
 
+  // "Buscar ofertas automaticamente" e "Ativar Auto-Repost" salvam na hora,
+  // sem esperar o botão "Salvar Alterações" — são os interruptores que decidem
+  // se o app faz alguma coisa sozinho ou não. Antes ficavam presos ao mesmo
+  // formData de tudo mais: se o usuário ligava o interruptor e trocava de
+  // página do app sem clicar em Salvar (fácil de fazer sem perceber, já que
+  // os toggles por grupo logo abaixo JÁ salvam na hora), a tela recarregava do
+  // banco na próxima visita e mostrava desligado de novo — parecia que a busca
+  // "parou sozinha" ou que o auto-repost "não funciona", quando na verdade
+  // nunca tinha sido salvo.
+  const toggleMasterSwitch = async (field: 'auto_scrape_enabled' | 'auto_repost_enabled', value: boolean) => {
+    setFormData((prev) => ({ ...prev, [field]: value }))
+    try {
+      await window.electronAPI.configSave({ [field]: value ? 1 : 0 })
+      const cfg = await window.electronAPI.configGet()
+      setConfig(cfg)
+    } catch (error) {
+      console.error(`Erro ao salvar ${field}:`, error)
+      setFormData((prev) => ({ ...prev, [field]: !value }))
+    }
+  }
+
   const addAutoSendTarget = async (platform: 'whatsapp' | 'telegram', group: any) => {
     try {
       const target = {
@@ -422,7 +443,7 @@ export default function Configuracoes() {
                 <p className="text-xs text-muted-foreground">O app busca produtos em oferta nas plataformas configuradas periodicamente</p>
               </div>
             </div>
-            <button onClick={() => updateField('auto_scrape_enabled', !formData.auto_scrape_enabled)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
+            <button onClick={() => toggleMasterSwitch('auto_scrape_enabled', !formData.auto_scrape_enabled)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
               {formData.auto_scrape_enabled ? <ToggleRight className="w-7 h-7 text-primary" /> : <ToggleLeft className="w-7 h-7 text-muted-foreground" />}
             </button>
           </div>
@@ -588,7 +609,7 @@ export default function Configuracoes() {
                 <p className="text-xs text-muted-foreground">Captura produtos e reposta automaticamente nos grupos destino com anúncio personalizado</p>
               </div>
             </div>
-            <button onClick={() => updateField('auto_repost_enabled', !formData.auto_repost_enabled)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
+            <button onClick={() => toggleMasterSwitch('auto_repost_enabled', !formData.auto_repost_enabled)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
               {formData.auto_repost_enabled ? <ToggleRight className="w-7 h-7 text-primary" /> : <ToggleLeft className="w-7 h-7 text-muted-foreground" />}
             </button>
           </div>
