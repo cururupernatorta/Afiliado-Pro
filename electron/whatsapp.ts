@@ -108,9 +108,9 @@ export class WhatsAppManager {
 
       this.sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return
-        for (const msg of m.messages) {
-          await this.handleIncomingMessage(msg)
-        }
+        // Em paralelo: um burst de várias mensagens não deve esperar a
+        // raspagem+repost completo de uma pra só então começar a próxima.
+        await Promise.all(m.messages.map((msg) => this.handleIncomingMessage(msg)))
       })
 
     } catch (error) {
@@ -223,9 +223,30 @@ export class WhatsAppManager {
     const code = inviteLinkOrCode.trim().split('/').pop()?.split('?')[0]
     if (!code) throw new Error('Link de convite do canal inválido')
 
-    const metadata = await this.sock.newsletterMetadata('invite', code)
+    const metadata: any = await this.sock.newsletterMetadata('invite', code)
     if (!metadata?.id) {
       throw new Error('Não consegui encontrar esse canal. Confira o link de convite.')
+    }
+
+    // O tipo do Baileys promete `metadata.name` como string direto, mas o
+    // newsletterCreate() do próprio Baileys (mesmo arquivo) mostra que a API
+    // às vezes devolve o nome aninhado em thread_metadata.name.text — e
+    // newsletterMetadata() não faz esse "unwrap", só repassa a resposta crua.
+    // Sem checar os dois formatos, o nome vinha undefined e caía no fallback
+    // "Canal sem nome" mesmo pra canais que têm nome normal.
+    const name: string | undefined =
+      (typeof metadata.name === 'string' && metadata.name) ||
+      metadata.thread_metadata?.name?.text ||
+      metadata.thread?.name?.text
+
+    if (!name) {
+      log.warn('Nome do canal não veio em nenhum formato conhecido:', JSON.stringify(metadata).substring(0, 400))
+      this.dbManager.addLog({
+        type: 'warning',
+        platform: 'whatsapp',
+        message: 'Canal adicionado sem conseguir extrair o nome',
+        details: JSON.stringify(metadata).substring(0, 400),
+      })
     }
 
     // O passo que importa é achar o ID real do canal (feito acima) — seguir é
@@ -236,18 +257,18 @@ export class WhatsAppManager {
     try {
       await this.sock.newsletterFollow(metadata.id)
     } catch (err) {
-      log.warn(`Não consegui confirmar "seguir" o canal ${metadata.name} (pode já estar seguindo):`, (err as Error).message)
+      log.warn(`Não consegui confirmar "seguir" o canal ${name} (pode já estar seguindo):`, (err as Error).message)
     }
 
     this.dbManager.saveGroup({
       platform: 'whatsapp',
       group_id: metadata.id,
-      group_name: metadata.name || 'Canal sem nome',
+      group_name: name || 'Canal sem nome',
       monitored: true,
     })
 
-    log.info(`Canal WhatsApp adicionado e seguido: ${metadata.name} (${metadata.id})`)
-    return { id: metadata.id, name: metadata.name || 'Canal sem nome' }
+    log.info(`Canal WhatsApp adicionado e seguido: ${name} (${metadata.id})`)
+    return { id: metadata.id, name: name || 'Canal sem nome' }
   }
 
   async sendProducts(groupIds: string[], productIds: number[], extra?: SendProductsExtra): Promise<void> {
@@ -309,56 +330,62 @@ export class WhatsAppManager {
     const isMonitored = monitoredGroups.some((g) => g.group_id === msg.key.remoteJid)
     if (!isMonitored) return
 
-    for (const url of urls) {
-      const store = this.scraperManager.affiliateManager?.detectStore(url)
-      if (!store) continue
-      try {
-        log.info(`Link detectado no WhatsApp: ${url}`)
+    // Em paralelo, não um de cada vez: se a mensagem (ou um burst de mensagens
+    // processado quase junto) tem vários links, o segundo não precisa esperar
+    // o raspador+repost do primeiro terminar pra começar — cada raspagem
+    // já é uma operação de rede independente.
+    await Promise.all(urls.map((url) => this.processDetectedUrl(url)))
+  }
 
-        // Verificar se já existe produto com essa URL (deduplicação)
-        if (this.dbManager.productExistsByUrl(url)) {
-          log.warn(`Produto ignorado - URL já capturada anteriormente: ${url}`)
-          this.dbManager.addLog({
-            type: 'warning',
-            platform: 'whatsapp',
-            message: 'Produto duplicado ignorado',
-            details: `URL já existente no banco: ${url}`,
-          })
-          continue
-        }
+  private async processDetectedUrl(url: string): Promise<void> {
+    const store = this.scraperManager.affiliateManager?.detectStore(url)
+    if (!store) return
+    try {
+      log.info(`Link detectado no WhatsApp: ${url}`)
 
-        const scraped = await this.scraperManager.scrapeProduct(url)
-        const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(url, store)
-        const product = this.dbManager.createProduct({
-          ...scraped,
-          source: 'whatsapp',
-          affiliate_url: affiliateUrl || undefined,
-        } as any)
-
-        if (!product) {
-          log.warn(`Produto não criado - provavelmente duplicado: ${url}`)
-          continue
-        }
-
+      // Verificar se já existe produto com essa URL (deduplicação)
+      if (this.dbManager.productExistsByUrl(url)) {
+        log.warn(`Produto ignorado - URL já capturada anteriormente: ${url}`)
         this.dbManager.addLog({
-          type: 'success',
+          type: 'warning',
           platform: 'whatsapp',
-          message: `Produto capturado: ${product.title}`,
-          details: `URL: ${url}`,
+          message: 'Produto duplicado ignorado',
+          details: `URL já existente no banco: ${url}`,
         })
-        sendToRenderer('product:created', product)
-
-        await autoRepostProduct(product, 'whatsapp', this.dbManager, this.queueManager)
-
-      } catch (error) {
-        log.error('Erro ao processar link do WhatsApp:', error)
-        this.dbManager.addLog({
-          type: 'error',
-          platform: 'whatsapp',
-          message: 'Falha ao capturar produto do WhatsApp',
-          details: (error as Error).message,
-        })
+        return
       }
+
+      const scraped = await this.scraperManager.scrapeProduct(url)
+      const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(url, store)
+      const product = this.dbManager.createProduct({
+        ...scraped,
+        source: 'whatsapp',
+        affiliate_url: affiliateUrl || undefined,
+      } as any)
+
+      if (!product) {
+        log.warn(`Produto não criado - provavelmente duplicado: ${url}`)
+        return
+      }
+
+      this.dbManager.addLog({
+        type: 'success',
+        platform: 'whatsapp',
+        message: `Produto capturado: ${product.title}`,
+        details: `URL: ${url}`,
+      })
+      sendToRenderer('product:created', product)
+
+      await autoRepostProduct(product, 'whatsapp', this.dbManager, this.queueManager)
+
+    } catch (error) {
+      log.error('Erro ao processar link do WhatsApp:', error)
+      this.dbManager.addLog({
+        type: 'error',
+        platform: 'whatsapp',
+        message: 'Falha ao capturar produto do WhatsApp',
+        details: (error as Error).message,
+      })
     }
   }
 

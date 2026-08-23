@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import path from 'path'
 import { DatabaseManager } from './database'
@@ -12,6 +12,13 @@ import { formatMessage, DEFAULT_TEMPLATE_TEXT, autoRepostProduct } from './messa
 import log from 'electron-log'
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+// Fechar a janela (X) deveria minimizar pra bandeja, não encerrar o app — quem
+// tem grupo/canal monitorado precisa do app rodando o dia todo. isQuitting só
+// vira true quando o usuário escolhe "Sair" no menu da bandeja, ou quando o
+// app está realmente encerrando (update, Cmd+Q no Mac etc.) — nesses casos o
+// fechamento da janela segue normal em vez de ser interceptado.
+let isQuitting = false
 let dbManager: DatabaseManager
 let queueManager: QueueManager
 let whatsappManager: WhatsAppManager
@@ -157,10 +164,38 @@ const createWindow = (): void => {
     mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'))
   }
 
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    mainWindow?.hide()
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
     setMainWindow(null)
   })
+}
+
+const createTray = (): void => {
+  const iconPath = path.join(__dirname, '../../assets/icon.png')
+  const icon = nativeImage.createFromPath(iconPath)
+  tray = new Tray(icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16 }))
+  tray.setToolTip('Afiliado Pro')
+
+  const showWindow = () => {
+    if (!mainWindow) { createWindow(); return }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Abrir Afiliado Pro', click: showWindow },
+    { type: 'separator' },
+    { label: 'Sair', click: () => { isQuitting = true; app.quit() } },
+  ]))
+
+  tray.on('click', showWindow)
 }
 
 app.whenReady().then(async () => {
@@ -230,6 +265,7 @@ app.whenReady().then(async () => {
 
     setupIpcHandlers()
     createWindow()
+    createTray()
     setupAutoUpdater()
 
     // Iniciar busca automática de ofertas
@@ -285,11 +321,18 @@ app.whenReady().then(async () => {
     })
   } catch (error) {
     log.error('Erro fatal na inicialização:', error)
+    isQuitting = true
     app.quit()
   }
 })
 
 app.on('before-quit', async () => {
+  // Marca antes de tudo: antes-quit dispara pra qualquer encerramento de
+  // verdade (menu "Sair" da bandeja já marca isso também, mas cobre outros
+  // gatilhos: atualização automática, Cmd+Q no Mac, etc.) — sem isso, o
+  // listener de 'close' da janela (que virou "minimizar pra bandeja") ia
+  // interceptar e impedir esses encerramentos.
+  isQuitting = true
   log.info('Encerrando Afiliado Pro...')
   try {
     // WhatsApp/Telegram primeiro, e em paralelo: no desligamento do Windows (ao

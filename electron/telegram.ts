@@ -238,58 +238,62 @@ export class TelegramManager {
       const isMonitored = monitoredGroups.some((g) => g.group_id === chatId)
       if (!isMonitored) return
 
-      for (const url of urls) {
-        const store = this.scraperManager.affiliateManager?.detectStore(url)
-        if (!store) continue
-        try {
-          log.info(`Link detectado no Telegram: ${url}`)
-
-          // Verificar se ja existe produto com essa URL (deduplicacao)
-          if (this.dbManager.productExistsByUrl(url)) {
-            log.warn(`Produto ignorado - URL ja capturada anteriormente: ${url}`)
-            this.dbManager.addLog({
-              type: 'warning',
-              platform: 'telegram',
-              message: 'Produto duplicado ignorado',
-              details: `URL ja existente no banco: ${url}`,
-            })
-            continue
-          }
-
-          const scraped = await this.scraperManager.scrapeProduct(url)
-          const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(url, store)
-          const product = this.dbManager.createProduct({
-            ...scraped,
-            source: 'telegram',
-            affiliateUrl: affiliateUrl || undefined,
-          } as any)
-
-          if (!product) {
-            log.warn(`Produto nao criado - provavelmente duplicado: ${url}`)
-            continue
-          }
-
-          this.dbManager.addLog({
-            type: 'success',
-            platform: 'telegram',
-            message: `Produto capturado: ${product.title}`,
-            details: `URL: ${url}`,
-          })
-          sendToRenderer('product:created', product)
-
-          await autoRepostProduct(product, 'telegram', this.dbManager, this.queueManager)
-
-        } catch (error) {
-          log.error('Erro ao processar link do Telegram:', error)
-          this.dbManager.addLog({
-            type: 'error',
-            platform: 'telegram',
-            message: 'Falha ao capturar produto do Telegram',
-            details: (error as Error).message,
-          })
-        }
-      }
+      // Em paralelo, não um de cada vez: vários links na mesma mensagem não
+      // precisam esperar a raspagem+repost completo de um pra começar o outro.
+      await Promise.all(urls.map((url: string) => this.processDetectedUrl(url)))
     })
+  }
+
+  private async processDetectedUrl(url: string): Promise<void> {
+    const store = this.scraperManager.affiliateManager?.detectStore(url)
+    if (!store) return
+    try {
+      log.info(`Link detectado no Telegram: ${url}`)
+
+      // Verificar se ja existe produto com essa URL (deduplicacao)
+      if (this.dbManager.productExistsByUrl(url)) {
+        log.warn(`Produto ignorado - URL ja capturada anteriormente: ${url}`)
+        this.dbManager.addLog({
+          type: 'warning',
+          platform: 'telegram',
+          message: 'Produto duplicado ignorado',
+          details: `URL ja existente no banco: ${url}`,
+        })
+        return
+      }
+
+      const scraped = await this.scraperManager.scrapeProduct(url)
+      const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(url, store)
+      const product = this.dbManager.createProduct({
+        ...scraped,
+        source: 'telegram',
+        affiliateUrl: affiliateUrl || undefined,
+      } as any)
+
+      if (!product) {
+        log.warn(`Produto nao criado - provavelmente duplicado: ${url}`)
+        return
+      }
+
+      this.dbManager.addLog({
+        type: 'success',
+        platform: 'telegram',
+        message: `Produto capturado: ${product.title}`,
+        details: `URL: ${url}`,
+      })
+      sendToRenderer('product:created', product)
+
+      await autoRepostProduct(product, 'telegram', this.dbManager, this.queueManager)
+
+    } catch (error) {
+      log.error('Erro ao processar link do Telegram:', error)
+      this.dbManager.addLog({
+        type: 'error',
+        platform: 'telegram',
+        message: 'Falha ao capturar produto do Telegram',
+        details: (error as Error).message,
+      })
+    }
   }
 
 }

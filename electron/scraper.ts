@@ -507,51 +507,36 @@ export class ScraperManager {
       trail.push(`resolução de link falhou, usando original: ${(err as Error).message}`)
     }
 
+    // O AliExpress renderiza a página do produto 100% no cliente (renderMode:
+    // "CSR" — confirmado ao vivo repetidas vezes que o HTML estático nunca
+    // tem preço/título nenhum, só um shell vazio). Tentar o fetch estático
+    // primeiro era só uma requisição inteira jogada fora em toda captura —
+    // pula direto pro headless, que é o único caminho que já funcionava.
+    trail.push('estático: pulado (AliExpress é 100% CSR, sempre falha)')
+
+    // O headless precisa de um teto de espera, com polling até os dados de
+    // preço aparecerem no DOM, em vez de uma pausa fixa.
     try {
-      const { $, html } = await this.fetchPage(url, true)
-      const blocked = this.looksBlocked(html)
-      if (!blocked) {
-        const extracted = this.extractAliExpressFields($, html)
-        title = extracted.title
+      // Os campos JSON antigos (salePrice, skuPrice...) já não aparecem mais em
+      // várias páginas de produto — o React app atual só desenha "R$X,XX" direto
+      // num span com classe gerada. Sem esse padrão como alternativa, o polling
+      // nunca detectava "pronto" e sempre esperava o teto inteiro, cortando a
+      // renderização antes da hora em conexões mais lentas.
+      const readyPattern = /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice|R\$\s?\d/
+      const { $, html } = await this.fetchPageHeadless(url, true, { waitMs: 12000, readyPattern })
+      const matched = readyPattern.test(html)
+      const extracted = this.extractAliExpressFields($, html)
+      trail.push(`headless: sinal de "pronto" encontrado=${matched}, preço extraído=${extracted.price}, ${html.length} bytes`)
+      if (extracted.price > 0) {
+        title = extracted.title || title
         price = extracted.price
         originalPrice = extracted.originalPrice
-        imageUrl = extracted.imageUrl
-        description = extracted.description
+        imageUrl = extracted.imageUrl || imageUrl
+        description = extracted.description || description
       }
-      trail.push(`estático: bloqueado=${blocked}, preço=${price}, ${html.length} bytes`)
     } catch (err) {
-      trail.push(`estático: erro — ${(err as Error).message}`)
-      log.warn('Scraping estático do AliExpress falhou:', (err as Error).message)
-    }
-
-    // O AliExpress passou a renderizar a página do produto 100% no cliente
-    // (renderMode: "CSR" no HTML — o servidor não manda mais preço nenhum
-    // embutido), então o scraping estático quase sempre falha e cai aqui.
-    // O headless precisa de um teto de espera maior, com polling até os
-    // dados de preço aparecerem no DOM, em vez de uma pausa fixa curta.
-    if (price === 0) {
-      try {
-        // Os campos JSON antigos (salePrice, skuPrice...) já não aparecem mais em
-        // várias páginas de produto — o React app atual só desenha "R$X,XX" direto
-        // num span com classe gerada. Sem esse padrão como alternativa, o polling
-        // nunca detectava "pronto" e sempre esperava o teto inteiro, cortando a
-        // renderização antes da hora em conexões mais lentas.
-        const readyPattern = /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice|R\$\s?\d/
-        const { $, html } = await this.fetchPageHeadless(url, true, { waitMs: 12000, readyPattern })
-        const matched = readyPattern.test(html)
-        const extracted = this.extractAliExpressFields($, html)
-        trail.push(`headless: sinal de "pronto" encontrado=${matched}, preço extraído=${extracted.price}, ${html.length} bytes`)
-        if (extracted.price > 0) {
-          title = extracted.title || title
-          price = extracted.price
-          originalPrice = extracted.originalPrice
-          imageUrl = extracted.imageUrl || imageUrl
-          description = extracted.description || description
-        }
-      } catch (err) {
-        trail.push(`headless: erro — ${(err as Error).message}`)
-        log.warn('Fallback headless do AliExpress também falhou:', (err as Error).message)
-      }
+      trail.push(`headless: erro — ${(err as Error).message}`)
+      log.warn('Fallback headless do AliExpress também falhou:', (err as Error).message)
     }
 
     log.info(`Scrape AliExpress: title="${title?.substring(0, 50)}...", price=${price}, orig=${originalPrice}`)
