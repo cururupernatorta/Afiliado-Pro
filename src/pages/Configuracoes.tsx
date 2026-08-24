@@ -109,16 +109,22 @@ export default function Configuracoes() {
           telegram_daily_limit: cfg.telegram_daily_limit || 50,
           min_delay_seconds: cfg.min_delay_seconds || 3,
           max_delay_seconds: cfg.max_delay_seconds || 15,
-          auto_convert_links: cfg.auto_convert_links !== false,
-          auto_repost_enabled: cfg.auto_repost_enabled === true,
-          stealth_mode: cfg.stealth_mode === true,
+          // O SQLite guarda boolean como INTEGER (0/1) — nunca volta true/false
+          // de verdade do banco. Comparar com === true / !== false só funcionava
+          // por acidente com os valores padrão do JS (antes do primeiro load) e
+          // sempre dava o resultado errado com o que vem do banco de verdade:
+          // === true nunca batia com 1 (ficava sempre desligado), !== false
+          // sempre batia com 1 OU 0 (ficava sempre ligado). !! resolve os dois.
+          auto_convert_links: !!cfg.auto_convert_links,
+          auto_repost_enabled: !!cfg.auto_repost_enabled,
+          stealth_mode: !!cfg.stealth_mode,
           stealth_start_hour: cfg.stealth_start_hour || 9,
           stealth_end_hour: cfg.stealth_end_hour || 22,
           stealth_hourly_limit: cfg.stealth_hourly_limit || 5,
           stealth_jitter_percent: cfg.stealth_jitter_percent || 30,
           stealth_cooldown_minutes: cfg.stealth_cooldown_minutes || 10,
           niche: cfg.niche || '',
-          auto_scrape_enabled: cfg.auto_scrape_enabled === true,
+          auto_scrape_enabled: !!cfg.auto_scrape_enabled,
           auto_scrape_interval_hours: cfg.auto_scrape_interval_hours || 6,
           group_link: cfg.group_link || '',
         })
