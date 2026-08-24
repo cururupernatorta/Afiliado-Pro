@@ -281,7 +281,7 @@ app.whenReady().then(async () => {
         // loja em Configurações não parava a captura dela, só a geração do link.
         const storeHasCredentials: Record<string, boolean> = {
           amazon: !!cfg.amazon_tag,
-          mercado_livre: !!cfg.mercado_livre_affiliate_id,
+          mercado_livre: !!cfg.mercado_livre_matt_tool,
           shopee: !!(cfg.shopee_app_id && cfg.shopee_app_secret),
           aliexpress: !!(cfg.aliexpress_app_key && cfg.aliexpress_app_secret && cfg.aliexpress_tracking_id),
         }

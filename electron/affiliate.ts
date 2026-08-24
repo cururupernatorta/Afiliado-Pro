@@ -82,15 +82,25 @@ export class AffiliateManager {
   // Simples adição de parâmetro na URL, sem chamada de API — não é fonte comum de falha,
   // mas adicionei matt_word junto do matt_tool (o programa de afiliados do ML costuma
   // pedir os dois para atribuição correta da comissão).
+  // matt_tool e matt_word são dois identificadores DIFERENTES, não o mesmo
+  // valor duplicado — confirmado analisando um link de afiliado real gerado
+  // pela Central de Afiliados: matt_tool é numérico (ex: "55658638"), matt_word
+  // é o texto do perfil social do afiliado (ex: "rainycreates"). O Mercado
+  // Livre não documenta uma API pública de "URL → link de afiliado"; o próprio
+  // Gerador de Links/Central de Afiliados é quem gera esses links — por isso
+  // aqui só remonta a URL do produto com os dois parâmetros da conta do
+  // usuário, do mesmo jeito que os links gerados pela própria central ficam.
   private convertMercadoLivre(url: string, config: any): string | null {
-    if (!config.mercado_livre_affiliate_id) {
-      log.warn('Affiliate ID Mercado Livre não configurado')
+    if (!config.mercado_livre_matt_tool) {
+      log.warn('matt_tool do Mercado Livre não configurado')
       return null
     }
     try {
       const urlObj = new URL(url)
-      urlObj.searchParams.set('matt_tool', config.mercado_livre_affiliate_id)
-      urlObj.searchParams.set('matt_word', config.mercado_livre_affiliate_id)
+      urlObj.searchParams.set('matt_tool', config.mercado_livre_matt_tool)
+      if (config.mercado_livre_matt_word) {
+        urlObj.searchParams.set('matt_word', config.mercado_livre_matt_word)
+      }
       return urlObj.toString()
     } catch (error) {
       log.error('URL inválida para Mercado Livre:', url, error)

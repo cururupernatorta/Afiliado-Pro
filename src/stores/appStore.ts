@@ -51,7 +51,8 @@ export interface MessageTemplate {
 export interface Config {
   shopee_app_id?: string
   shopee_app_secret?: string
-  mercado_livre_affiliate_id?: string
+  mercado_livre_matt_tool?: string
+  mercado_livre_matt_word?: string
   amazon_tag?: string
   aliexpress_app_key?: string
   aliexpress_app_secret?: string

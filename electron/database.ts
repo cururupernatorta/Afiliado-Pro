@@ -24,7 +24,10 @@ export interface Config {
   id?: number
   shopee_app_id?: string
   shopee_app_secret?: string
+  /** @deprecated migrado pra mercado_livre_matt_tool — mantido só pra não quebrar leituras de bancos antigos */
   mercado_livre_affiliate_id?: string
+  mercado_livre_matt_tool?: string
+  mercado_livre_matt_word?: string
   amazon_tag?: string
   aliexpress_app_key?: string
   aliexpress_app_secret?: string
@@ -240,6 +243,30 @@ export class DatabaseManager extends EventEmitter {
       }
     } catch (err) {
       log.error('Erro na migração aliexpress_tracking_id:', err)
+    }
+
+    // Migração: matt_tool e matt_word do Mercado Livre são dois identificadores
+    // DIFERENTES (confirmado analisando um link de afiliado real: matt_tool é
+    // numérico, tipo "55658638"; matt_word é o texto do perfil, tipo
+    // "rainycreates") — o campo antigo "mercado_livre_affiliate_id" colava o
+    // mesmo valor nos dois, gerando um link que não bate com o formato real
+    // que o Mercado Livre usa. Migra o valor antigo pra matt_tool (o mais
+    // parecido em formato/uso) e deixa matt_word em branco — o usuário precisa
+    // pegar esse valor de um link de afiliado real gerado pela própria conta.
+    try {
+      const columns = this.db.prepare("PRAGMA table_info(config)").all() as any[]
+      const hasMattTool = columns.some((c) => c.name === 'mercado_livre_matt_tool')
+      if (!hasMattTool) {
+        this.db.exec('ALTER TABLE config ADD COLUMN mercado_livre_matt_tool TEXT')
+        this.db.exec('ALTER TABLE config ADD COLUMN mercado_livre_matt_word TEXT')
+        this.db.exec(`
+          UPDATE config SET mercado_livre_matt_tool = mercado_livre_affiliate_id
+          WHERE mercado_livre_affiliate_id IS NOT NULL AND mercado_livre_affiliate_id != ''
+        `)
+        log.info('Migração: colunas mercado_livre_matt_tool/matt_word adicionadas à tabela config')
+      }
+    } catch (err) {
+      log.error('Erro na migração mercado_livre_matt_tool/matt_word:', err)
     }
 
     // Migração: adiciona template_id em ad_templates (biblioteca de templates

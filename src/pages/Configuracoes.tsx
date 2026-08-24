@@ -33,7 +33,8 @@ export default function Configuracoes() {
   const [formData, setFormData] = useState({
     shopee_app_id: '',
     shopee_app_secret: '',
-    mercado_livre_affiliate_id: '',
+    mercado_livre_matt_tool: '',
+    mercado_livre_matt_word: '',
     amazon_tag: '',
     aliexpress_app_key: '',
     aliexpress_app_secret: '',
@@ -100,7 +101,8 @@ export default function Configuracoes() {
         setFormData({
           shopee_app_id: cfg.shopee_app_id || '',
           shopee_app_secret: cfg.shopee_app_secret || '',
-          mercado_livre_affiliate_id: cfg.mercado_livre_affiliate_id || '',
+          mercado_livre_matt_tool: cfg.mercado_livre_matt_tool || '',
+          mercado_livre_matt_word: cfg.mercado_livre_matt_word || '',
           amazon_tag: cfg.amazon_tag || '',
           aliexpress_app_key: cfg.aliexpress_app_key || '',
           aliexpress_app_secret: cfg.aliexpress_app_secret || '',
@@ -182,7 +184,8 @@ export default function Configuracoes() {
       await window.electronAPI.configSave({
         shopee_app_id: formData.shopee_app_id || null,
         shopee_app_secret: formData.shopee_app_secret || null,
-        mercado_livre_affiliate_id: formData.mercado_livre_affiliate_id || null,
+        mercado_livre_matt_tool: formData.mercado_livre_matt_tool || null,
+        mercado_livre_matt_word: formData.mercado_livre_matt_word || null,
         amazon_tag: formData.amazon_tag || null,
         aliexpress_app_key: formData.aliexpress_app_key || null,
         aliexpress_app_secret: formData.aliexpress_app_secret || null,
@@ -308,9 +311,10 @@ export default function Configuracoes() {
       color: 'text-yellow-400',
       bg: 'bg-yellow-400/10',
       fields: [
-        { key: 'mercado_livre_affiliate_id', label: 'Affiliate ID', placeholder: 'Seu Affiliate ID' },
+        { key: 'mercado_livre_matt_tool', label: 'matt_tool', placeholder: 'Ex: 55658638' },
+        { key: 'mercado_livre_matt_word', label: 'matt_word', placeholder: 'Ex: seuperfil' },
       ],
-      help: 'Obtenha em: mercadolivre.com.br/afiliados',
+      help: 'O Mercado Livre não tem um "Affiliate ID" único — gere um link em mercadolivre.com.br/afiliados (Central de Afiliados → Gerador de Links), abra esse link e copie os valores de matt_tool e matt_word que aparecem na URL final.',
     },
     {
       name: 'Amazon',
