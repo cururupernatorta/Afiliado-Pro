@@ -200,7 +200,26 @@ export class AffiliateManager {
   // renderizar um link curto direto (ver uso em scraper.ts).
   async resolveAliExpressUrl(url: string): Promise<string> {
     if (this.ALIEXPRESS_CANONICAL_PATTERN.test(url)) return url
-    return this.followRedirects(url)
+    const resolved = await this.followRedirects(url)
+    if (this.ALIEXPRESS_CANONICAL_PATTERN.test(resolved)) return resolved
+
+    // Link curto do tipo "compartilhar" do app (a.aliexpress.com/_c...,
+    // costuma vir de quem compartilha direto do app AliExpress em canal/grupo
+    // de promoção) não redireciona pro produto — cai numa página de
+    // "coin-index" (recompensa/gamificação da AliExpress), sem preço nenhum
+    // pra raspar. Confirmado em produção (Logs) que essa página sempre falha
+    // na extração. O ID do produto real continua ali, só que como parâmetro
+    // "productIds" na URL da página errada — monta o link canônico a partir
+    // dele em vez de tentar raspar a página de coin-index.
+    try {
+      const productId = new URL(resolved).searchParams.get('productIds')
+      if (productId && /^\d+$/.test(productId)) {
+        return `https://www.aliexpress.com/item/${productId}.html`
+      }
+    } catch {
+      // URL de destino inválida — segue com o que já temos
+    }
+    return resolved
   }
 
   // ==================== ALIEXPRESS ====================
@@ -263,13 +282,18 @@ export class AffiliateManager {
     }
   }
 
-  // Busca de ofertas via API oficial de afiliado (aliexpress.affiliate.hotproduct.query)
+  // Busca de ofertas via API oficial de afiliado (aliexpress.affiliate.product.query)
   // em vez de raspar a página de busca do site. A busca raspada (/wholesale?SearchText=...)
   // é fragilíssima — bloqueia com captcha com frequência e nunca trouxe preço original pra
   // comparar, então qualquer produto que batesse a palavra-chave virava "oferta" mesmo sem
   // desconto nenhum. A API usa as MESMAS credenciais já configuradas pra gerar link de
   // afiliado (App Key/Secret + Tracking ID), devolve preço/título/foto estruturados direto
   // da AliExpress (sem parsing de HTML) e nunca é bloqueada por anti-bot.
+  //
+  // Usa "product.query", não "hotproduct.query": confirmado em produção (Logs) que
+  // hotproduct.query devolve erro InsufficientPermission — é um método com aprovação
+  // separada que a maioria das contas de afiliado não tem por padrão. product.query é
+  // o método padrão de busca, com acesso mais amplo.
   async queryAliExpressDeals(keywords: string[]): Promise<{
     title: string
     price: number
@@ -294,7 +318,7 @@ export class AffiliateManager {
         const timestamp = Date.now()
         const params: Record<string, any> = {
           app_key: config.aliexpress_app_key,
-          method: 'aliexpress.affiliate.hotproduct.query',
+          method: 'aliexpress.affiliate.product.query',
           timestamp,
           v: '2.0',
           sign_method: 'sha256',
@@ -313,7 +337,7 @@ export class AffiliateManager {
         const response = await axios.get('https://api-sg.aliexpress.com/sync', { params, timeout: 15000 })
         const result = response.data
         const products =
-          result?.aliexpress_affiliate_hotproduct_query_response?.resp_result?.result?.products?.product
+          result?.aliexpress_affiliate_product_query_response?.resp_result?.result?.products?.product
         if (!Array.isArray(products) || products.length === 0) {
           const rawTrail = JSON.stringify(result).substring(0, 500)
           log.warn(`AliExpress: sem produtos pra "${keyword}". Resposta: ${rawTrail}`)

@@ -658,17 +658,20 @@ export class ScraperManager {
           for (const keyword of keywords.slice(0, 2)) {
             const shopeeUrl = `https://shopee.com.br/search?keyword=${encodeURIComponent(keyword)}&sortBy=sales`
             try {
-              const { $: $shopee } = await this.fetchPageHeadless(shopeeUrl, true, {
+              const { $: $shopee, html } = await this.fetchPageHeadless(shopeeUrl, true, {
                 waitMs: 7000,
                 readyPattern: /data-sqe="item"/,
               })
-              $shopee('[data-sqe="item"]').slice(0, 5).each((_, el) => {
+              const items = $shopee('[data-sqe="item"]')
+              let found = 0
+              items.slice(0, 5).each((_, el) => {
                 const title = $shopee(el).find('[data-sqe="name"]').text().trim()
                 const priceText = $shopee(el).find('[data-sqe="price"]').text()
                 const price = this.parsePrice(priceText || '')
                 const imageUrl = $shopee(el).find('img').first().attr('src')
                 const link = $shopee(el).find('a').first().attr('href')
                 if (title && link && price > 0) {
+                  found++
                   const fullUrl = link.startsWith('http') ? link : `https://shopee.com.br${link}`
                   results.push({
                     title,
@@ -681,8 +684,29 @@ export class ScraperManager {
                   })
                 }
               })
+              // A página pode carregar sem exceção nenhuma (bloqueio/captcha não
+              // sempre joga erro) e o seletor simplesmente não achar nada — antes
+              // isso ficava mudo, sem log nenhum visível em Logs, diferente do
+              // AliExpress que já tem essa instrumentação.
+              if (found === 0) {
+                const blocked = this.looksBlocked(html)
+                const trail = `bloqueado=${blocked}, itens no seletor=${items.length}, ${html.length} bytes`
+                log.warn(`Shopee: sem ofertas pra "${keyword}" — ${trail}`)
+                this.dbManager.addLog({
+                  type: 'warning',
+                  platform: 'system',
+                  message: `Shopee: busca de ofertas não retornou produtos pra "${keyword}"`,
+                  details: trail,
+                })
+              }
             } catch (e) {
               log.warn(`Erro ao buscar Shopee para "${keyword}":`, e)
+              this.dbManager.addLog({
+                type: 'error',
+                platform: 'system',
+                message: `Erro ao buscar ofertas Shopee para "${keyword}"`,
+                details: (e as Error).message,
+              })
             }
           }
           break
