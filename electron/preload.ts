@@ -6,7 +6,7 @@ export interface ElectronAPI {
   whatsappDisconnect: () => Promise<void>
   whatsappGetStatus: () => Promise<any>
   whatsappGetGroups: () => Promise<any[]>
-  whatsappToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
+  whatsappToggleMonitor: (groupId: string, groupName: string, enabled: boolean) => Promise<void>
   whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: SendProductsExtra) => Promise<void>
   whatsappGetQrCode: () => Promise<string | null>
   whatsappAddChannel: (inviteLinkOrCode: string) => Promise<{ id: string; name: string }>
@@ -17,7 +17,7 @@ export interface ElectronAPI {
   telegramDisconnect: () => Promise<void>
   telegramGetStatus: () => Promise<any>
   telegramGetGroups: () => Promise<any[]>
-  telegramToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
+  telegramToggleMonitor: (groupId: string, groupName: string, enabled: boolean) => Promise<void>
   telegramSendProducts: (groupIds: string[], productIds: number[], extra?: SendProductsExtra) => Promise<void>
   telegramSendCode: (code: string) => Promise<void>
 
@@ -78,7 +78,7 @@ const api: ElectronAPI = {
   whatsappDisconnect: () => ipcRenderer.invoke('whatsapp:disconnect'),
   whatsappGetStatus: () => ipcRenderer.invoke('whatsapp:getStatus'),
   whatsappGetGroups: () => ipcRenderer.invoke('whatsapp:getGroups'),
-  whatsappToggleMonitor: (groupId, enabled) => ipcRenderer.invoke('whatsapp:toggleMonitor', groupId, enabled),
+  whatsappToggleMonitor: (groupId, groupName, enabled) => ipcRenderer.invoke('whatsapp:toggleMonitor', groupId, groupName, enabled),
   whatsappSendProducts: (groupIds, productIds, extra) => ipcRenderer.invoke('whatsapp:sendProducts', groupIds, productIds, extra),
   whatsappGetQrCode: () => ipcRenderer.invoke('whatsapp:getQrCode'),
   whatsappAddChannel: (inviteLinkOrCode) => ipcRenderer.invoke('whatsapp:addChannel', inviteLinkOrCode),
@@ -89,7 +89,7 @@ const api: ElectronAPI = {
   telegramDisconnect: () => ipcRenderer.invoke('telegram:disconnect'),
   telegramGetStatus: () => ipcRenderer.invoke('telegram:getStatus'),
   telegramGetGroups: () => ipcRenderer.invoke('telegram:getGroups'),
-  telegramToggleMonitor: (groupId, enabled) => ipcRenderer.invoke('telegram:toggleMonitor', groupId, enabled),
+  telegramToggleMonitor: (groupId, groupName, enabled) => ipcRenderer.invoke('telegram:toggleMonitor', groupId, groupName, enabled),
   telegramSendProducts: (groupIds, productIds, extra) => ipcRenderer.invoke('telegram:sendProducts', groupIds, productIds, extra),
   telegramSendCode: (code) => ipcRenderer.invoke('telegram:sendCode', code),
 

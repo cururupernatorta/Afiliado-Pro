@@ -4,7 +4,7 @@ export interface ElectronAPI {
   whatsappDisconnect: () => Promise<void>
   whatsappGetStatus: () => Promise<any>
   whatsappGetGroups: () => Promise<any[]>
-  whatsappToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
+  whatsappToggleMonitor: (groupId: string, groupName: string, enabled: boolean) => Promise<void>
   whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string; templateText?: string }) => Promise<void>
   whatsappGetQrCode: () => Promise<string | null>
   whatsappAddChannel: (inviteLinkOrCode: string) => Promise<{ id: string; name: string }>
@@ -16,7 +16,7 @@ export interface ElectronAPI {
   telegramDisconnect: () => Promise<void>
   telegramGetStatus: () => Promise<any>
   telegramGetGroups: () => Promise<any[]>
-  telegramToggleMonitor: (groupId: string, enabled: boolean) => Promise<void>
+  telegramToggleMonitor: (groupId: string, groupName: string, enabled: boolean) => Promise<void>
   telegramSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string; templateText?: string }) => Promise<void>
   telegramSendCode: (code: string) => Promise<void>
 

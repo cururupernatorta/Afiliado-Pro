@@ -197,30 +197,21 @@ export class WhatsAppManager {
     }
   }
 
-  async toggleMonitor(groupId: string, enabled: boolean): Promise<void> {
-    // Grupos normais são resolvidos pela lista ao vivo do Baileys. Canais de
-    // transmissão (@newsletter) não aparecem nela — o Baileys não tem uma API
-    // pra listar canais seguidos —, então pra esses usamos o nome que já ficou
-    // salvo no banco quando o canal foi adicionado via link de convite.
-    const groups = await this.getGroups()
-    const liveGroup = groups.find((g) => g.id === groupId)
-
-    if (liveGroup) {
-      this.dbManager.saveGroup({
-        platform: 'whatsapp',
-        group_id: groupId,
-        group_name: liveGroup.name,
-        monitored: enabled,
-      })
-      log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo WhatsApp: ${liveGroup.name}`)
-      return
-    }
-
-    const saved = this.dbManager.getGroups('whatsapp').find((g) => g.group_id === groupId)
-    if (!saved) throw new Error('Grupo ou canal não encontrado')
-
-    this.dbManager.toggleGroupMonitor('whatsapp', groupId, enabled)
-    log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para canal WhatsApp: ${saved.group_name}`)
+  // groupName vem da tela, que já tem o nome (a lista exibida já é ao vivo ou
+  // já foi salva antes). Antes esta função refazia a busca ao vivo dos grupos
+  // no Baileys só pra redescobrir o nome — uma chamada de rede ao WhatsApp a
+  // cada toggle, sem necessidade. Isso falhava sempre que o WhatsApp estava
+  // no meio de uma das quedas/reconexões automáticas (frequentes, a cada
+  // 30-90min segundo os logs), fazendo o toggle "desligar sozinho": o clique
+  // lançava erro, a tela revertia silenciosamente e nada era salvo no banco.
+  async toggleMonitor(groupId: string, groupName: string, enabled: boolean): Promise<void> {
+    this.dbManager.saveGroup({
+      platform: 'whatsapp',
+      group_id: groupId,
+      group_name: groupName,
+      monitored: enabled,
+    })
+    log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo/canal WhatsApp: ${groupName}`)
   }
 
   // Não existe API no Baileys pra listar todos os canais que a conta segue —
@@ -340,7 +331,25 @@ export class WhatsAppManager {
 
     const monitoredGroups = this.dbManager.getMonitoredGroups('whatsapp')
     const isMonitored = monitoredGroups.some((g) => g.group_id === msg.key.remoteJid)
-    if (!isMonitored) return
+    if (!isMonitored) {
+      // Só loga quando o link já bate com uma loja suportada (não é ruído de
+      // qualquer URL em qualquer grupo) — serve pra distinguir "o grupo nem
+      // está marcado como monitorado" de "está marcado, mas o remoteJid da
+      // mensagem não bate com o group_id salvo" (ex.: WhatsApp trocando o
+      // formato do JID entre a lista de grupos e o evento de mensagem — os
+      // dois viriam de chamadas diferentes do Baileys).
+      const hasStoreLink = urls.some((url) => this.scraperManager.affiliateManager?.detectStore(url))
+      if (hasStoreLink) {
+        log.warn(`Link de loja recebido, mas o grupo não está marcado como monitorado: ${msg.key.remoteJid}`)
+        this.dbManager.addLog({
+          type: 'warning',
+          platform: 'whatsapp',
+          message: 'Link de oferta recebido de um grupo não marcado como monitorado',
+          details: `remoteJid: ${msg.key.remoteJid}`,
+        })
+      }
+      return
+    }
 
     // Em paralelo, não um de cada vez: se a mensagem (ou um burst de mensagens
     // processado quase junto) tem vários links, o segundo não precisa esperar
@@ -351,7 +360,21 @@ export class WhatsAppManager {
 
   private async processDetectedUrl(url: string): Promise<void> {
     const store = this.scraperManager.affiliateManager?.detectStore(url)
-    if (!store) return
+    if (!store) {
+      // Isso só roda pra link vindo de grupo já marcado como monitorado (o
+      // usuário escolheu esse grupo de propósito pra capturar ofertas), então
+      // não é dado sensível de grupo aleatório — mas antes retornava aqui sem
+      // nenhum rastro, e um link de loja não suportada (ou um encurtador que
+      // o detectStore não reconhece) desaparecia sem deixar pista nenhuma.
+      log.warn(`Link de grupo monitorado ignorado - loja não reconhecida: ${url}`)
+      this.dbManager.addLog({
+        type: 'warning',
+        platform: 'whatsapp',
+        message: 'Link recebido de grupo monitorado, mas loja não reconhecida',
+        details: `URL: ${url}`,
+      })
+      return
+    }
     try {
       log.info(`Link detectado no WhatsApp: ${url}`)
 
@@ -402,6 +425,19 @@ export class WhatsAppManager {
   }
 
   private async startMonitoring(): Promise<void> {
-    log.info('Monitoramento de grupos WhatsApp iniciado')
+    // Sem isso, um log export nunca deixava claro se o problema era "nenhum
+    // grupo está marcado como monitorado" ou "está marcado mas as mensagens
+    // não estão sendo capturadas" — as duas causas pareciam idênticas de
+    // fora (zero produto capturado de grupo).
+    const monitored = this.dbManager.getMonitoredGroups('whatsapp')
+    log.info(`Monitoramento de grupos WhatsApp iniciado (${monitored.length} grupo(s)/canal(is) monitorado(s))`)
+    this.dbManager.addLog({
+      type: monitored.length > 0 ? 'info' : 'warning',
+      platform: 'whatsapp',
+      message: monitored.length > 0
+        ? `Monitorando ${monitored.length} grupo(s)/canal(is): ${monitored.map((g) => g.group_name).join(', ')}`
+        : 'Nenhum grupo ou canal do WhatsApp está marcado como monitorado — nenhuma oferta será capturada de grupos até ativar o monitoramento em Grupos',
+      details: monitored.map((g) => g.group_id).join(', '),
+    })
   }
 }

@@ -81,9 +81,9 @@ export default function Grupos() {
 
     try {
       if (group.platform === 'whatsapp') {
-        await window.electronAPI.whatsappToggleMonitor(group.id, newStatus)
+        await window.electronAPI.whatsappToggleMonitor(group.id, group.name, newStatus)
       } else {
-        await window.electronAPI.telegramToggleMonitor(group.id, newStatus)
+        await window.electronAPI.telegramToggleMonitor(group.id, group.name, newStatus)
       }
     } catch (error) {
       updateGroup(group.id, { monitored: !newStatus })

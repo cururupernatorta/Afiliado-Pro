@@ -445,12 +445,6 @@ export class DatabaseManager extends EventEmitter {
     stmt.run(group.platform, group.group_id, group.group_name, group.monitored ? 1 : 0)
   }
 
-  toggleGroupMonitor(platform: string, groupId: string, monitored: boolean): void {
-    this.db.prepare(
-      'UPDATE group_monitors SET monitored = ? WHERE platform = ? AND group_id = ?'
-    ).run(monitored ? 1 : 0, platform, groupId)
-  }
-
   getMonitoredGroups(platform: 'whatsapp' | 'telegram'): GroupMonitor[] {
     return this.db.prepare('SELECT * FROM group_monitors WHERE platform = ? AND monitored = 1').all(platform) as GroupMonitor[]
   }

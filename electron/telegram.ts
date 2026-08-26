@@ -161,18 +161,17 @@ export class TelegramManager {
     }
   }
 
-  async toggleMonitor(groupId: string, enabled: boolean): Promise<void> {
-    const groups = await this.getGroups()
-    const group = groups.find((g) => g.id === groupId)
-    if (!group) throw new Error('Grupo nao encontrado')
-
+  // Ver o comentário equivalente em WhatsAppManager.toggleMonitor: groupName
+  // vem da tela em vez de refazer uma busca ao vivo aqui, pra não depender da
+  // conexão estar de pé bem na hora do clique.
+  async toggleMonitor(groupId: string, groupName: string, enabled: boolean): Promise<void> {
     this.dbManager.saveGroup({
       platform: 'telegram',
       group_id: groupId,
-      group_name: group.name,
+      group_name: groupName,
       monitored: enabled,
     })
-    log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo Telegram: ${group.name}`)
+    log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo Telegram: ${groupName}`)
   }
 
   async sendProducts(groupIds: string[], productIds: number[], extra?: SendProductsExtra): Promise<void> {

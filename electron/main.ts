@@ -377,8 +377,8 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('whatsapp:disconnect', () => whatsappManager.disconnect())
   ipcMain.handle('whatsapp:getStatus', () => whatsappManager.getStatus())
   ipcMain.handle('whatsapp:getGroups', () => whatsappManager.getGroups())
-  ipcMain.handle('whatsapp:toggleMonitor', (_, groupId: string, enabled: boolean) =>
-    whatsappManager.toggleMonitor(groupId, enabled)
+  ipcMain.handle('whatsapp:toggleMonitor', (_, groupId: string, groupName: string, enabled: boolean) =>
+    whatsappManager.toggleMonitor(groupId, groupName, enabled)
   )
   ipcMain.handle('whatsapp:sendProducts', (_, groupIds: string[], productIds: number[], extra?: SendProductsExtra) =>
     whatsappManager.sendProducts(groupIds, productIds, extra)
@@ -392,8 +392,8 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('telegram:disconnect', () => telegramManager.disconnect())
   ipcMain.handle('telegram:getStatus', () => telegramManager.getStatus())
   ipcMain.handle('telegram:getGroups', () => telegramManager.getGroups())
-  ipcMain.handle('telegram:toggleMonitor', (_, groupId: string, enabled: boolean) =>
-    telegramManager.toggleMonitor(groupId, enabled)
+  ipcMain.handle('telegram:toggleMonitor', (_, groupId: string, groupName: string, enabled: boolean) =>
+    telegramManager.toggleMonitor(groupId, groupName, enabled)
   )
   ipcMain.handle('telegram:sendProducts', (_, groupIds: string[], productIds: number[], extra?: SendProductsExtra) =>
     telegramManager.sendProducts(groupIds, productIds, extra)

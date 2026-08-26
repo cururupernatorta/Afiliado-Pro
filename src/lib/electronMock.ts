@@ -12,7 +12,7 @@ export function installElectronMockIfNeeded() {
   ;(window as any).electronAPI = {
     whatsappConnect: async () => {},
     whatsappDisconnect: async () => {},
-    whatsappGetStatus: async () => 'disconnected',
+    whatsappGetStatus: async () => ({ status: 'disconnected', qrCode: null }),
     whatsappGetGroups: async () => [],
     whatsappToggleMonitor: async () => {},
     whatsappSendProducts: async () => {},
@@ -23,7 +23,7 @@ export function installElectronMockIfNeeded() {
 
     telegramConnect: async () => {},
     telegramDisconnect: async () => {},
-    telegramGetStatus: async () => 'disconnected',
+    telegramGetStatus: async () => ({ status: 'disconnected' }),
     telegramGetGroups: async () => [],
     telegramToggleMonitor: async () => {},
     telegramSendProducts: async () => {},

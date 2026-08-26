@@ -15,41 +15,23 @@ import { useAppStore } from '../stores/appStore'
 export default function Conexoes() {
   const {
     whatsappStatus,
-    setWhatsappStatus,
     whatsappQrCode,
     setWhatsappQrCode,
     telegramStatus,
-    setTelegramStatus,
   } = useAppStore()
 
   const [phoneNumber, setPhoneNumber] = useState('')
   const [telegramCode, setTelegramCode] = useState('')
+  // Os listeners de status/QR agora vivem em App.tsx (sempre montado); aqui
+  // só resta refletir localmente quando o backend pede o código, pra poder
+  // esconder o campo de novo assim que o usuário envia (mostra um spinner
+  // enquanto o backend valida, em vez de deixar o campo preenchido parado).
   const [showTelegramCode, setShowTelegramCode] = useState(false)
 
   useEffect(() => {
-    const unsubQr = window.electronAPI.onWhatsAppQrCode((qr) => {
-      setWhatsappQrCode(qr)
-    })
-    const unsubStatus = window.electronAPI.onWhatsAppStatus((status) => {
-      setWhatsappStatus(status as any)
-    })
-    const unsubTelegramStatus = window.electronAPI.onTelegramStatus((status) => {
-      setTelegramStatus(status as any)
-      if (status === 'code_required') {
-        setShowTelegramCode(true)
-      }
-    })
-    const unsubTelegramCode = window.electronAPI.onTelegramCode(() => {
-      setShowTelegramCode(true)
-    })
-
-    return () => {
-      unsubQr()
-      unsubStatus()
-      unsubTelegramStatus()
-      unsubTelegramCode()
-    }
-  }, [setWhatsappStatus, setWhatsappQrCode, setTelegramStatus])
+    if (telegramStatus === 'code_required') setShowTelegramCode(true)
+    if (telegramStatus === 'disconnected' || telegramStatus === 'connected') setShowTelegramCode(false)
+  }, [telegramStatus])
 
   const handleWhatsAppConnect = async () => {
     await window.electronAPI.whatsappConnect()
