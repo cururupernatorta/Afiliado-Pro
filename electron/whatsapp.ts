@@ -318,11 +318,26 @@ export class WhatsAppManager {
     }
   }
 
+  private unwrapMessage(message: proto.IMessage | null | undefined): proto.IMessage | null | undefined {
+    const inner = message?.ephemeralMessage?.message ||
+                  message?.viewOnceMessage?.message ||
+                  message?.viewOnceMessageV2?.message ||
+                  message?.documentWithCaptionMessage?.message
+    return inner ? this.unwrapMessage(inner) : message
+  }
+
   private async handleIncomingMessage(msg: proto.IWebMessageInfo): Promise<void> {
     if (!msg.message || msg.key.fromMe) return
-    const text = msg.message.conversation ||
-                 msg.message.extendedTextMessage?.text ||
-                 msg.message.imageMessage?.caption || ''
+    // Grupo grande de ofertas costuma ter mensagens temporárias ativadas —
+    // nesse caso o Baileys embrulha a mensagem de verdade um nível mais
+    // fundo (ephemeralMessage.message), e o mesmo vale pra "ver uma vez"
+    // (viewOnceMessage/V2) e documento-com-legenda. Sem desembrulhar, os 3
+    // campos abaixo ficam todos undefined e a mensagem passa batida com
+    // texto vazio — sem log nenhum, porque essa função retorna cedo demais.
+    const content = this.unwrapMessage(msg.message)
+    const text = content?.conversation ||
+                 content?.extendedTextMessage?.text ||
+                 content?.imageMessage?.caption || ''
     if (!text) return
 
     const urlRegex = /(https?:\/\/[^\s]+)/g
