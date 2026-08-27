@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import path from 'path'
 import { DatabaseManager } from './database'
@@ -7,6 +7,7 @@ import { WhatsAppManager } from './whatsapp'
 import { TelegramManager } from './telegram'
 import { ScraperManager } from './scraper'
 import { AffiliateManager } from './affiliate'
+import { testMercadoLivreCredentials } from './mercadoLivreApi'
 import { setMainWindow } from './utils'
 import { formatMessage, DEFAULT_TEMPLATE_TEXT, autoRepostProduct } from './messageHelper'
 import log from 'electron-log'
@@ -156,6 +157,14 @@ const createWindow = (): void => {
   })
 
   setMainWindow(mainWindow)
+
+  // O guia de configuração aponta pro DevCenter e pra Central de Afiliados.
+  // Sem isto, clicar num link abriria uma janela do Electron sem barra de
+  // endereço nem login salvo — onde justamente não dá pra fazer o cadastro.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://')) shell.openExternal(url)
+    return { action: 'deny' }
+  })
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
@@ -438,6 +447,14 @@ const setupIpcHandlers = (): void => {
 
   ipcMain.handle('config:get', () => dbManager.getConfig())
   ipcMain.handle('config:save', (_, config) => dbManager.saveConfig(config))
+
+  ipcMain.handle('mercadoLivre:testCredentials', (_, clientId: string, clientSecret: string) =>
+    testMercadoLivreCredentials(clientId, clientSecret)
+  )
+
+  ipcMain.handle('shell:openExternal', (_, url: string) => {
+    if (url.startsWith('https://')) shell.openExternal(url)
+  })
 
   ipcMain.handle('queue:getJobs', () => queueManager.getJobs())
   ipcMain.handle('queue:pause', () => queueManager.pause())

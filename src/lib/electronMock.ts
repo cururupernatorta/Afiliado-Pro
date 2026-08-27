@@ -38,6 +38,14 @@ export function installElectronMockIfNeeded() {
 
     configGet: async () => ({}),
     configSave: async () => {},
+    mercadoLivreTestCredentials: async () => ({
+      ok: false,
+      title: 'Teste indisponível fora do Electron',
+      detail: 'Rode o app pelo Electron para testar as credenciais de verdade.',
+    }),
+    openExternal: async (url: string) => {
+      window.open(url, '_blank', 'noopener')
+    },
 
     queueGetJobs: async () => [],
     queuePause: async () => {},

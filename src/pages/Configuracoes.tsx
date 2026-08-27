@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ComponentType } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -25,8 +25,50 @@ import {
   RefreshCw,
   Download,
   AlertTriangle,
+  ExternalLink,
+  ChevronDown,
+  XCircle,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
+
+interface CredField {
+  key: string
+  label: string
+  placeholder: string
+  type?: string
+}
+
+/**
+ * Um bloco de credenciais com o passo a passo de onde consegui-las. Existe
+ * porque o usuário final é afiliado, não desenvolvedor: sem o guia na tela ele
+ * teria que adivinhar o que é um "App ID" e por que a API responde 403.
+ */
+interface CredSection {
+  title: string
+  /** Para que serve essa credencial, na prática. */
+  purpose: string
+  /** O que quebra no app se ela ficar em branco. */
+  missing: string
+  fields: CredField[]
+  steps: string[]
+  link: { label: string; url: string }
+  /** Mostra o botão "Testar credenciais" (só o Mercado Livre tem teste hoje). */
+  test?: boolean
+}
+
+interface CredStore {
+  name: string
+  icon: ComponentType<{ className?: string }>
+  color: string
+  bg: string
+  help: string
+  /** Loja simples: campos soltos, sem guia. */
+  fields?: CredField[]
+  /** Loja com guia: campos agrupados por finalidade. */
+  sections?: CredSection[]
+  /** Ocupa a linha inteira da grade — usado quando o card tem guia e fica alto. */
+  wide?: boolean
+}
 
 export default function Configuracoes() {
   const { setConfig, autoSendTargets, setAutoSendTargets, adTemplates, setAdTemplate } = useAppStore()
@@ -295,11 +337,63 @@ export default function Configuracoes() {
     }
   }
 
+  const [mlTest, setMlTest] = useState<{ ok: boolean; title: string; detail: string } | null>(null)
+  const [mlTesting, setMlTesting] = useState(false)
+  const [openGuide, setOpenGuide] = useState<string | null>(null)
+
+  // Testa contra a API de verdade em vez de só validar formato: os dois erros
+  // comuns (credencial trocada e aplicação sem permissão) são indistinguíveis
+  // daqui, e só aparecem quando o Mercado Livre responde.
+  const handleTestMercadoLivre = async () => {
+    setMlTesting(true)
+    setMlTest(null)
+    try {
+      setMlTest(
+        await window.electronAPI.mercadoLivreTestCredentials(
+          formData.mercado_livre_client_id,
+          formData.mercado_livre_client_secret
+        )
+      )
+    } catch (error: any) {
+      setMlTest({
+        ok: false,
+        title: 'Não consegui rodar o teste',
+        detail: String(error?.message ?? error),
+      })
+    } finally {
+      setMlTesting(false)
+    }
+  }
+
+  const renderCredField = (field: CredField) => (
+    <div key={field.key}>
+      <label className="text-xs text-muted-foreground mb-1 block">{field.label}</label>
+      <div className="relative">
+        <input
+          type={field.type === 'password' && !showSecrets[field.key] ? 'password' : 'text'}
+          placeholder={field.placeholder}
+          value={formData[field.key as keyof typeof formData] as string}
+          onChange={(e) => updateField(field.key, e.target.value)}
+          className="w-full h-9 px-3 pr-10 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+        />
+        {field.type === 'password' && (
+          <button
+            type="button"
+            onClick={() => setShowSecrets((prev) => ({ ...prev, [field.key]: !prev[field.key] }))}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {showSecrets[field.key] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+
   const isTargetAdded = (platform: string, groupId: string) => {
     return autoSendTargets.some((t) => t.platform === platform && t.group_id === groupId)
   }
 
-  const affiliateStores = [
+  const affiliateStores: CredStore[] = [
     {
       name: 'Shopee',
       icon: Store,
@@ -316,13 +410,46 @@ export default function Configuracoes() {
       icon: Store,
       color: 'text-yellow-400',
       bg: 'bg-yellow-400/10',
-      fields: [
-        { key: 'mercado_livre_matt_tool', label: 'matt_tool', placeholder: 'Ex: 55658638' },
-        { key: 'mercado_livre_matt_word', label: 'matt_word', placeholder: 'Ex: seuperfil' },
-        { key: 'mercado_livre_client_id', label: 'App ID (API oficial)', placeholder: 'Ex: 1312986851963725' },
-        { key: 'mercado_livre_client_secret', label: 'Secret Key (API oficial)', placeholder: 'Secret da aplicação', type: 'password' },
+      wide: true,
+      help: 'São duas credenciais suas, criadas na sua conta do Mercado Livre — e elas ficam salvas só neste computador.',
+      sections: [
+        {
+          title: 'Sua comissão (matt_tool e matt_word)',
+          purpose: 'Identificam você dentro do link enviado. É o que faz a comissão da venda cair na sua conta.',
+          missing: 'Sem isso o app não gera link de afiliado do Mercado Livre: o produto sai com o link normal e a venda não é sua.',
+          fields: [
+            { key: 'mercado_livre_matt_tool', label: 'matt_tool', placeholder: 'Ex: 55658638' },
+            { key: 'mercado_livre_matt_word', label: 'matt_word', placeholder: 'Ex: seuperfil' },
+          ],
+          steps: [
+            'Entre em mercadolivre.com.br/afiliados com a sua conta e ative o Programa de Afiliados, se ainda não ativou.',
+            'Abra a Central de Afiliados e vá em Gerador de Links.',
+            'Cole a URL de qualquer produto e gere o link.',
+            'Abra o link gerado no navegador e olhe o endereço na barra: ele termina com matt_tool=... e matt_word=...',
+            'Copie o matt_tool (só números) e o matt_word (o nome do seu perfil) para os campos acima.',
+          ],
+          link: { label: 'Abrir a Central de Afiliados', url: 'https://www.mercadolivre.com.br/afiliados' },
+        },
+        {
+          title: 'Dados do produto (App ID e Secret Key)',
+          purpose: 'Deixam o app ler título, preço e imagem pela API oficial do Mercado Livre.',
+          missing: 'Sem isso o app tenta ler a página do produto, e o Mercado Livre costuma responder com uma tela de verificação de tráfego — o produto entra sem preço ou sem foto.',
+          fields: [
+            { key: 'mercado_livre_client_id', label: 'App ID', placeholder: 'Ex: 1312986851963725' },
+            { key: 'mercado_livre_client_secret', label: 'Secret Key', placeholder: 'Secret da aplicação', type: 'password' },
+          ],
+          steps: [
+            'Entre em developers.mercadolivre.com.br com a mesma conta do Mercado Livre e abra "Minhas aplicações".',
+            'Clique em criar aplicação e dê o nome que quiser (ex: Afiliado Pro).',
+            'O formulário pede uma "Redirect URI". O app não usa esse endereço — a conexão é feita direto por App ID e Secret —, então informe qualquer endereço https:// seu.',
+            'Nas permissões da aplicação, marque "Publicação e sincronização" como Somente leitura. Este passo é obrigatório: sem ele a API recusa tudo com erro 403.',
+            'Salve e copie o App ID e o Secret Key para os campos acima.',
+            'Clique em "Testar credenciais" aqui embaixo para confirmar antes de salvar.',
+          ],
+          link: { label: 'Abrir o DevCenter', url: 'https://developers.mercadolivre.com.br/devcenter' },
+          test: true,
+        },
       ],
-      help: 'matt_tool e matt_word: gere um link em mercadolivre.com.br/afiliados (Central de Afiliados → Gerador de Links), abra esse link e copie os dois valores que aparecem na URL final — é o que garante a sua comissão. App ID e Secret Key: crie uma aplicação em developers.mercadolivre.com.br e, nas permissões dela, coloque "Publicação e sincronização" em Somente leitura (sem isso a API recusa com erro 403). É por ela que vêm título, preço e imagem do produto, já que o Mercado Livre bloqueia a leitura direta da página.',
     },
     {
       name: 'Amazon',
@@ -383,7 +510,12 @@ export default function Configuracoes() {
           {affiliateStores.map((store) => {
             const Icon = store.icon
             return (
-              <motion.div key={store.name} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="ticket-card p-5 space-y-4">
+              <motion.div
+                key={store.name}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={`ticket-card p-5 space-y-4 ${store.wide ? 'md:col-span-2' : ''}`}
+              >
                 <div className="flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-lg ${store.bg} flex items-center justify-center`}>
                     <Icon className={`w-5 h-5 ${store.color}`} />
@@ -393,29 +525,102 @@ export default function Configuracoes() {
                     <p className="text-xs text-muted-foreground">{store.help}</p>
                   </div>
                 </div>
-                {store.fields.map((field) => (
-                  <div key={field.key}>
-                    <label className="text-xs text-muted-foreground mb-1 block">{field.label}</label>
-                    <div className="relative">
-                      <input
-                        type={field.type === 'password' && !showSecrets[field.key] ? 'password' : 'text'}
-                        placeholder={field.placeholder}
-                        value={formData[field.key as keyof typeof formData] as string}
-                        onChange={(e) => updateField(field.key, e.target.value)}
-                        className="w-full h-9 px-3 pr-10 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-                      />
-                      {field.type === 'password' && (
-                        <button
-                          type="button"
-                          onClick={() => setShowSecrets((prev) => ({ ...prev, [field.key]: !prev[field.key] }))}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          {showSecrets[field.key] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                        </button>
+
+                {store.fields?.map((field) => renderCredField(field))}
+
+                {store.sections?.map((section) => {
+                  const guideId = `${store.name}:${section.title}`
+                  const isOpen = openGuide === guideId
+                  return (
+                    <div key={section.title} className="rounded-lg border border-border bg-secondary/30 p-4 space-y-3">
+                      <div>
+                        <h6 className="text-sm font-semibold text-foreground">{section.title}</h6>
+                        <p className="text-xs text-muted-foreground mt-0.5">{section.purpose}</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {section.fields.map((field) => renderCredField(field))}
+                      </div>
+
+                      <p className="flex items-start gap-1.5 text-xs text-amber-400/90">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>{section.missing}</span>
+                      </p>
+
+                      <button
+                        type="button"
+                        onClick={() => setOpenGuide(isOpen ? null : guideId)}
+                        className="flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                      >
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                        {isOpen ? 'Esconder o passo a passo' : 'Não tenho esses dados — como conseguir?'}
+                      </button>
+
+                      {isOpen && (
+                        <div className="space-y-3 pt-1">
+                          <ol className="space-y-2">
+                            {section.steps.map((step, index) => (
+                              <li key={index} className="flex gap-2.5 text-xs text-muted-foreground">
+                                <span className="shrink-0 w-5 h-5 rounded-full bg-primary/15 text-primary font-semibold flex items-center justify-center">
+                                  {index + 1}
+                                </span>
+                                <span className="pt-0.5">{step}</span>
+                              </li>
+                            ))}
+                          </ol>
+                          <button
+                            type="button"
+                            onClick={() => window.electronAPI.openExternal(section.link.url)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary border border-border text-xs font-medium text-foreground hover:bg-secondary/70 transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            {section.link.label}
+                          </button>
+                        </div>
+                      )}
+
+                      {section.test && (
+                        <div className="space-y-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={handleTestMercadoLivre}
+                            disabled={mlTesting}
+                            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                          >
+                            {mlTesting ? (
+                              <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              </motion.div>
+                            ) : (
+                              <Zap className="w-3.5 h-3.5" />
+                            )}
+                            {mlTesting ? 'Testando...' : 'Testar credenciais'}
+                          </button>
+
+                          {mlTest && (
+                            <div
+                              className={`flex items-start gap-2 rounded-lg border p-3 text-xs ${
+                                mlTest.ok
+                                  ? 'border-green-500/30 bg-green-500/10 text-green-300'
+                                  : 'border-red-500/30 bg-red-500/10 text-red-300'
+                              }`}
+                            >
+                              {mlTest.ok ? (
+                                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                              ) : (
+                                <XCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                              )}
+                              <div>
+                                <p className="font-semibold">{mlTest.title}</p>
+                                <p className="mt-0.5 opacity-90">{mlTest.detail}</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </motion.div>
             )
           })}

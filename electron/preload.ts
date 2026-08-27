@@ -30,6 +30,11 @@ export interface ElectronAPI {
 
   configGet: () => Promise<any>
   configSave: (config: any) => Promise<void>
+  mercadoLivreTestCredentials: (
+    clientId: string,
+    clientSecret: string
+  ) => Promise<{ ok: boolean; title: string; detail: string }>
+  openExternal: (url: string) => Promise<void>
 
   queueGetJobs: () => Promise<any[]>
   queuePause: () => Promise<void>
@@ -102,6 +107,9 @@ const api: ElectronAPI = {
 
   configGet: () => ipcRenderer.invoke('config:get'),
   configSave: (config) => ipcRenderer.invoke('config:save', config),
+  mercadoLivreTestCredentials: (clientId, clientSecret) =>
+    ipcRenderer.invoke('mercadoLivre:testCredentials', clientId, clientSecret),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 
   queueGetJobs: () => ipcRenderer.invoke('queue:getJobs'),
   queuePause: () => ipcRenderer.invoke('queue:pause'),

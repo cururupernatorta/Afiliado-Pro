@@ -31,6 +31,11 @@ export interface ElectronAPI {
   // Config
   configGet: () => Promise<any>
   configSave: (config: any) => Promise<void>
+  mercadoLivreTestCredentials: (
+    clientId: string,
+    clientSecret: string
+  ) => Promise<{ ok: boolean; title: string; detail: string }>
+  openExternal: (url: string) => Promise<void>
 
   // Queue
   queueGetJobs: () => Promise<any[]>

@@ -213,3 +213,109 @@ export class MercadoLivreApi {
     }
   }
 }
+
+/** Resultado de um teste de credenciais, em linguagem de usuário final. */
+export interface MercadoLivreCheck {
+  ok: boolean
+  title: string
+  detail: string
+}
+
+/**
+ * Testa o App ID e o Secret Key sem salvar nada, pra o usuário descobrir na
+ * hora que errou a credencial em vez de só ver produto sem preço depois.
+ *
+ * Dois passos, porque as duas falhas comuns são diferentes e a mensagem
+ * genérica ("deu erro") não diz qual delas foi:
+ *  1. Autenticar   -> pega App ID/Secret errados (o passo do copiar e colar).
+ *  2. Ler um dado  -> pega a aplicação sem a permissão "Publicação e
+ *     sincronização", que autentica normalmente e só depois responde 403.
+ */
+export async function testMercadoLivreCredentials(
+  clientId: string,
+  clientSecret: string
+): Promise<MercadoLivreCheck> {
+  if (!clientId?.trim() || !clientSecret?.trim()) {
+    return {
+      ok: false,
+      title: 'Preencha os dois campos',
+      detail: 'App ID e Secret Key são obrigatórios para testar a conexão.',
+    }
+  }
+
+  let token: string
+  try {
+    const params = new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: clientId.trim(),
+      client_secret: clientSecret.trim(),
+    })
+    const { data } = await axios.post(OAUTH_URL, params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 15000,
+    })
+    if (!data?.access_token) throw new Error('Resposta do OAuth sem access_token')
+    token = data.access_token
+  } catch (error: any) {
+    const status = error?.response?.status
+    if (status === 400 || status === 401) {
+      return {
+        ok: false,
+        title: 'App ID ou Secret Key incorretos',
+        detail:
+          'O Mercado Livre recusou essas credenciais. Confira se copiou os valores da mesma aplicação ' +
+          'no DevCenter, sem espaços sobrando. O Secret Key só aparece por inteiro no DevCenter — se ' +
+          'perdeu, gere um novo por lá.',
+      }
+    }
+    if (!error?.response) {
+      return {
+        ok: false,
+        title: 'Não consegui falar com o Mercado Livre',
+        detail: `Parece problema de internet ou de firewall, não das credenciais. Detalhe: ${error.message}`,
+      }
+    }
+    return {
+      ok: false,
+      title: `O Mercado Livre respondeu com erro (HTTP ${status})`,
+      detail: JSON.stringify(error.response.data ?? {}).substring(0, 300),
+    }
+  }
+
+  // Autenticou. Agora confere se a aplicação tem a permissão de leitura —
+  // é a mesma chamada que a busca por nicho usa, então se ela passa aqui,
+  // passa lá.
+  try {
+    await axios.get(`${API_BASE}/sites/MLB/domain_discovery/search`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { limit: 1, q: 'celular' },
+      timeout: 15000,
+    })
+    return {
+      ok: true,
+      title: 'Tudo certo — credenciais válidas e com permissão',
+      detail:
+        'O app já consegue puxar título, preço e imagem dos produtos do Mercado Livre pela API oficial. ' +
+        'Não esqueça de clicar em "Salvar Alterações".',
+    }
+  } catch (error: any) {
+    const status = error?.response?.status
+    if (status === 403) {
+      return {
+        ok: false,
+        title: 'Credenciais certas, mas falta permissão na aplicação',
+        detail:
+          'O App ID e o Secret Key estão corretos. Falta liberar o acesso: no DevCenter, edite a aplicação, ' +
+          'marque "Publicação e sincronização" em Somente leitura, salve e teste de novo.',
+      }
+    }
+    return {
+      ok: false,
+      title: 'Autenticou, mas a leitura de dados falhou',
+      detail:
+        `O App ID e o Secret Key foram aceitos, mas a chamada de teste voltou com erro ` +
+        `${status ? `HTTP ${status}` : error.message}. Pode ser instabilidade do Mercado Livre — ` +
+        'tente de novo em alguns minutos. Se persistir, confira as permissões da aplicação no DevCenter.',
+    }
+  }
+}
