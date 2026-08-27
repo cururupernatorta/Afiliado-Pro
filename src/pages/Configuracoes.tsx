@@ -35,8 +35,6 @@ export default function Configuracoes() {
     shopee_app_secret: '',
     mercado_livre_matt_tool: '',
     mercado_livre_matt_word: '',
-    mercado_livre_client_id: '',
-    mercado_livre_client_secret: '',
     amazon_tag: '',
     aliexpress_app_key: '',
     aliexpress_app_secret: '',
@@ -47,7 +45,6 @@ export default function Configuracoes() {
     max_delay_seconds: 15,
     auto_convert_links: true,
     auto_repost_enabled: false,
-    mercado_livre_browser_automation: false,
     stealth_mode: false,
     stealth_start_hour: 9,
     stealth_end_hour: 22,
@@ -106,8 +103,6 @@ export default function Configuracoes() {
           shopee_app_secret: cfg.shopee_app_secret || '',
           mercado_livre_matt_tool: cfg.mercado_livre_matt_tool || '',
           mercado_livre_matt_word: cfg.mercado_livre_matt_word || '',
-          mercado_livre_client_id: cfg.mercado_livre_client_id || '',
-          mercado_livre_client_secret: cfg.mercado_livre_client_secret || '',
           amazon_tag: cfg.amazon_tag || '',
           aliexpress_app_key: cfg.aliexpress_app_key || '',
           aliexpress_app_secret: cfg.aliexpress_app_secret || '',
@@ -124,7 +119,6 @@ export default function Configuracoes() {
           // sempre batia com 1 OU 0 (ficava sempre ligado). !! resolve os dois.
           auto_convert_links: !!cfg.auto_convert_links,
           auto_repost_enabled: !!cfg.auto_repost_enabled,
-          mercado_livre_browser_automation: !!cfg.mercado_livre_browser_automation,
           stealth_mode: !!cfg.stealth_mode,
           stealth_start_hour: cfg.stealth_start_hour || 9,
           stealth_end_hour: cfg.stealth_end_hour || 22,
@@ -192,8 +186,6 @@ export default function Configuracoes() {
         shopee_app_secret: formData.shopee_app_secret || null,
         mercado_livre_matt_tool: formData.mercado_livre_matt_tool || null,
         mercado_livre_matt_word: formData.mercado_livre_matt_word || null,
-        mercado_livre_client_id: formData.mercado_livre_client_id || null,
-        mercado_livre_client_secret: formData.mercado_livre_client_secret || null,
         amazon_tag: formData.amazon_tag || null,
         aliexpress_app_key: formData.aliexpress_app_key || null,
         aliexpress_app_secret: formData.aliexpress_app_secret || null,
@@ -204,7 +196,6 @@ export default function Configuracoes() {
         max_delay_seconds: formData.max_delay_seconds,
         auto_convert_links: formData.auto_convert_links ? 1 : 0,
         auto_repost_enabled: formData.auto_repost_enabled ? 1 : 0,
-        mercado_livre_browser_automation: formData.mercado_livre_browser_automation ? 1 : 0,
         stealth_mode: formData.stealth_mode ? 1 : 0,
         stealth_start_hour: formData.stealth_start_hour,
         stealth_end_hour: formData.stealth_end_hour,
@@ -322,10 +313,8 @@ export default function Configuracoes() {
       fields: [
         { key: 'mercado_livre_matt_tool', label: 'matt_tool', placeholder: 'Ex: 55658638' },
         { key: 'mercado_livre_matt_word', label: 'matt_word', placeholder: 'Ex: seuperfil' },
-        { key: 'mercado_livre_client_id', label: 'App ID (API oficial)', placeholder: 'Ex: 1234567890123456' },
-        { key: 'mercado_livre_client_secret', label: 'Secret Key (API oficial)', placeholder: 'Secret da aplicação', type: 'password' },
       ],
-      help: 'O Mercado Livre não tem um "Affiliate ID" único — gere um link em mercadolivre.com.br/afiliados (Central de Afiliados → Gerador de Links), abra esse link e copie os valores de matt_tool e matt_word que aparecem na URL final. Preencha os dois mesmo já tendo feito login do Mercado Livre em Conexões: o login serve pra gerar o link com a vitrine (aquela página com foto de perfil), e estes campos são o formato usado sempre que a vitrine não puder ser gerada. App ID e Secret Key são de uma aplicação criada em developers.mercadolivre.com.br (Criar aplicação) — é por eles que os dados do produto (título, preço, imagem) vêm da API oficial, já que o Mercado Livre bloqueia a leitura direta da página. Podem ser os mesmos para várias pessoas; não têm relação com a comissão, que vem do matt_tool/matt_word.',
+      help: 'O Mercado Livre não tem um "Affiliate ID" único — gere um link em mercadolivre.com.br/afiliados (Central de Afiliados → Gerador de Links), abra esse link e copie os valores de matt_tool e matt_word que aparecem na URL final.',
     },
     {
       name: 'Amazon',
@@ -536,23 +525,6 @@ export default function Configuracoes() {
             </div>
             <button onClick={() => updateField('auto_convert_links', !formData.auto_convert_links)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
               {formData.auto_convert_links ? <ToggleRight className="w-7 h-7 text-primary" /> : <ToggleLeft className="w-7 h-7 text-muted-foreground" />}
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
-            <div className="flex items-center gap-3">
-              <Link2 className="w-5 h-5 text-amber-400" />
-              <div>
-                <p className="text-sm font-medium text-foreground">Automação de navegador no Mercado Livre</p>
-                <p className="text-xs text-muted-foreground">
-                  Abre a página do produto num navegador embutido para ler o preço e gerar o link com vitrine,
-                  usando a conta conectada em Conexões. Deixe desligado, salvo se souber o que está fazendo:
-                  esse tráfego automatizado pode fazer o Mercado Livre bloquear seu acesso — ou sinalizar sua conta.
-                </p>
-              </div>
-            </div>
-            <button onClick={() => updateField('mercado_livre_browser_automation', !formData.mercado_livre_browser_automation)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
-              {formData.mercado_livre_browser_automation ? <ToggleRight className="w-7 h-7 text-amber-400" /> : <ToggleLeft className="w-7 h-7 text-muted-foreground" />}
             </button>
           </div>
         </div>

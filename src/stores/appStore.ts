@@ -124,9 +124,6 @@ interface AppState {
   telegramStatus: 'disconnected' | 'connecting' | 'connected' | 'code_required' | 'error'
   setTelegramStatus: (status: AppState['telegramStatus']) => void
 
-  mercadoLivreStatus: 'disconnected' | 'connected'
-  setMercadoLivreStatus: (status: AppState['mercadoLivreStatus']) => void
-
   queueJobs: QueueJob[]
   setQueueJobs: (jobs: QueueJob[]) => void
 
@@ -195,9 +192,6 @@ export const useAppStore = create<AppState>((set) => ({
 
   telegramStatus: 'disconnected',
   setTelegramStatus: (status) => set({ telegramStatus: status }),
-
-  mercadoLivreStatus: 'disconnected',
-  setMercadoLivreStatus: (status) => set({ mercadoLivreStatus: status }),
 
   queueJobs: [],
   setQueueJobs: (jobs) => set({ queueJobs: jobs }),

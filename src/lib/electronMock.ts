@@ -29,11 +29,6 @@ export function installElectronMockIfNeeded() {
     telegramSendProducts: async () => {},
     telegramSendCode: async () => {},
 
-    mercadoLivreGetStatus: async () => 'disconnected',
-    mercadoLivreLogin: async () => 'cancelled',
-    mercadoLivreLogout: async () => {},
-    onMercadoLivreStatus: noop,
-
     productGetAll: async () => [],
     productGetById: async () => null,
     productCreate: async (data: any) => ({ id: Date.now(), created_at: new Date().toISOString(), ...data }),

@@ -28,16 +28,6 @@ export interface Config {
   mercado_livre_affiliate_id?: string
   mercado_livre_matt_tool?: string
   mercado_livre_matt_word?: string
-  mercado_livre_client_id?: string
-  mercado_livre_client_secret?: string
-  /**
-   * Liga a automação de navegador no Mercado Livre: raspar a página do produto
-   * num navegador embutido e gerar o link "vitrine" pela sessão logada.
-   * DESLIGADO por padrão — esse tráfego automatizado (ainda mais autenticado)
-   * é o que o anti-bot do Mercado Livre procura, e coincidiu com o bloqueio
-   * que apareceu em várias máquinas depois que o recurso foi lançado.
-   */
-  mercado_livre_browser_automation: boolean
   amazon_tag?: string
   aliexpress_app_key?: string
   aliexpress_app_secret?: string
@@ -279,27 +269,6 @@ export class DatabaseManager extends EventEmitter {
       log.error('Erro na migração mercado_livre_matt_tool/matt_word:', err)
     }
 
-    // Migração: credenciais da API oficial do Mercado Livre. O scraping da
-    // página do produto passou a ser barrado por uma página de verificação de
-    // tráfego (confirmado ao vivo em três máquinas diferentes), então os dados
-    // do produto passam a vir da API oficial, que não sofre esse bloqueio.
-    try {
-      const columns = this.db.prepare("PRAGMA table_info(config)").all() as any[]
-      if (!columns.some((c) => c.name === 'mercado_livre_client_id')) {
-        this.db.exec('ALTER TABLE config ADD COLUMN mercado_livre_client_id TEXT')
-        this.db.exec('ALTER TABLE config ADD COLUMN mercado_livre_client_secret TEXT')
-        log.info('Migração: colunas mercado_livre_client_id/client_secret adicionadas à tabela config')
-      }
-      // Desligada por padrão de propósito: quem já estava usando não continua
-      // gerando tráfego automatizado no Mercado Livre sem escolher isso.
-      if (!columns.some((c) => c.name === 'mercado_livre_browser_automation')) {
-        this.db.exec('ALTER TABLE config ADD COLUMN mercado_livre_browser_automation INTEGER DEFAULT 0')
-        log.info('Migração: coluna mercado_livre_browser_automation adicionada à tabela config')
-      }
-    } catch (err) {
-      log.error('Erro na migração das colunas do Mercado Livre:', err)
-    }
-
     // Migração: adiciona template_id em ad_templates (biblioteca de templates
     // nomeados/reutilizáveis, substitui o texto solto por grupo)
     try {
@@ -416,7 +385,6 @@ export class DatabaseManager extends EventEmitter {
         max_delay_seconds: 15,
         auto_convert_links: true,
         auto_repost_enabled: false,
-        mercado_livre_browser_automation: false,
         stealth_mode: false,
         stealth_start_hour: 9,
         stealth_end_hour: 22,

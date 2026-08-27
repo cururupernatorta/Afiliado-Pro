@@ -4,8 +4,6 @@ import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
 import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
-import { ML_PARTITION } from './mercadoLivreSession'
-import { MercadoLivreApi } from './mercadoLivreApi'
 import { humanizeDescription } from './humanize'
 
 const DESKTOP_UA =
@@ -23,12 +21,10 @@ interface PriceExtractionOptions {
 export class ScraperManager {
   public affiliateManager: AffiliateManager
   private dbManager: DatabaseManager
-  private mercadoLivreApi: MercadoLivreApi
 
   constructor(affiliateManager: AffiliateManager, dbManager: DatabaseManager) {
     this.affiliateManager = affiliateManager
     this.dbManager = dbManager
-    this.mercadoLivreApi = new MercadoLivreApi(dbManager)
   }
 
   async scrapeProduct(url: string): Promise<Partial<Product>> {
@@ -94,7 +90,7 @@ export class ScraperManager {
   private async fetchPageHeadless(
     url: string,
     useMobileUA = false,
-    options: { waitMs?: number; readyPattern?: RegExp; partition?: string } = {}
+    options: { waitMs?: number; readyPattern?: RegExp } = {}
   ): Promise<{ $: cheerio.CheerioAPI; html: string }> {
     log.info(`Scraping estático falhou/insuficiente — tentando renderizar com browser headless: ${url}`)
     const html = await renderPageHtml(url, {
@@ -102,7 +98,6 @@ export class ScraperManager {
       waitMs: options.waitMs ?? 3500,
       timeoutMs: 25000,
       readyPattern: options.readyPattern,
-      partition: options.partition,
     })
     return { $: cheerio.load(html), html }
   }
@@ -123,13 +118,6 @@ export class ScraperManager {
       'robot check',
       'validate your request',
       'request blocked',
-      // Mercado Livre: em vez de captcha, ele redireciona pra uma página de
-      // "verificação de conta" com HTTP 200 e nenhum dado do produto —
-      // confirmado ao vivo. Sem esses sinais, o scraper seguia em frente,
-      // achava preço 0 e culpava o layout da página ("não consegui extrair o
-      // preço"), escondendo que o acesso é que foi barrado.
-      'suspicious-traffic',
-      'account-verification',
     ]
     return signals.some((s) => lower.includes(s))
   }
@@ -278,11 +266,17 @@ export class ScraperManager {
     }
   }
 
-  private extractMercadoLivreFields($: cheerio.CheerioAPI) {
+  private async scrapeMercadoLivre(url: string): Promise<Partial<Product>> {
+    const { $, html } = await this.fetchPage(url)
+
+    if (this.looksBlocked(html)) {
+      throw new Error('O Mercado Livre bloqueou o acesso (captcha/anti-bot). Tente novamente mais tarde ou insira o produto manualmente.')
+    }
+
     const title = $('meta[property="og:title"]').attr('content') || $('h1').first().text().trim()
+
     const price = this.extractPrice($, {
       metaSelectors: ['meta[property="product:price:amount"]'],
-      jsonPatterns: [/"price":\s*"?([0-9.,]+)"?/i],
       cssSelectors: [
         '.andes-money-amount__fraction',
         'span[class*="price"]',
@@ -290,76 +284,13 @@ export class ScraperManager {
       ],
       bodyFallback: true,
     })
+
     const imageUrl =
       $('meta[property="og:image"]').attr('content') ||
       $('img[class*="gallery"]').first().attr('src') ||
       $('img').first().attr('src')
+
     const description = $('meta[property="og:description"]').attr('content') || ''
-    return { title, price, imageUrl, description }
-  }
-
-  private async scrapeMercadoLivre(url: string): Promise<Partial<Product>> {
-    // API oficial primeiro: a raspagem da página do produto vem sendo barrada
-    // por uma página de verificação de tráfego (confirmado ao vivo, inclusive
-    // com sessão logada e navegador real), enquanto a API não sofre isso.
-    // Só cai pra raspagem se a API não estiver configurada ou falhar.
-    const fromApi = await this.mercadoLivreApi.fetchProduct(url)
-    if (fromApi) {
-      log.info(`Produto do Mercado Livre obtido pela API oficial: ${fromApi.title}`)
-      return fromApi
-    }
-
-    let title = '', price = 0, imageUrl: string | undefined, description = ''
-    let blocked = false
-
-    try {
-      const { $, html } = await this.fetchPage(url)
-      blocked = this.looksBlocked(html)
-      if (!blocked) {
-        const extracted = this.extractMercadoLivreFields($)
-        title = extracted.title
-        price = extracted.price
-        imageUrl = extracted.imageUrl
-        description = extracted.description
-      }
-    } catch (err) {
-      log.warn('Scraping estático do Mercado Livre falhou:', (err as Error).message)
-    }
-
-    // 2ª tentativa com browser de verdade, reusando a sessão logada do
-    // Mercado Livre (Conexões). DESLIGADA por padrão: carregar a página num
-    // navegador (ainda mais autenticado) a cada produto é justamente o padrão
-    // que o anti-bot do Mercado Livre procura, e o bloqueio que apareceu em
-    // várias máquinas coincidiu com o lançamento desse fallback — antes dele,
-    // a raspagem simples vinha funcionando. Quem quiser assumir o risco liga
-    // em Configurações.
-    const browserAutomationEnabled = !!this.dbManager.getConfig().mercado_livre_browser_automation
-    if (price === 0 && browserAutomationEnabled) {
-      try {
-        const { $, html } = await this.fetchPageHeadless(url, false, { partition: ML_PARTITION })
-        if (!this.looksBlocked(html)) {
-          const extracted = this.extractMercadoLivreFields($)
-          if (extracted.price > 0) {
-            title = extracted.title || title
-            price = extracted.price
-            imageUrl = extracted.imageUrl || imageUrl
-            description = extracted.description || description
-            blocked = false
-          }
-        } else {
-          blocked = true
-        }
-      } catch (err) {
-        log.warn('Fallback headless do Mercado Livre também falhou:', (err as Error).message)
-      }
-    }
-
-    if (price === 0 && blocked) {
-      throw new Error(
-        'O Mercado Livre bloqueou o acesso automático (página de verificação de conta / tráfego suspeito). ' +
-        'Faça login do Mercado Livre em Conexões — isso costuma resolver — ou informe o preço manualmente.'
-      )
-    }
 
     if (price === 0) {
       throw new Error(

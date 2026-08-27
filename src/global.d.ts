@@ -20,12 +20,6 @@ export interface ElectronAPI {
   telegramSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string; templateText?: string }) => Promise<void>
   telegramSendCode: (code: string) => Promise<void>
 
-  // Mercado Livre (sessão de afiliado)
-  mercadoLivreGetStatus: () => Promise<'connected' | 'disconnected'>
-  mercadoLivreLogin: () => Promise<'connected' | 'cancelled'>
-  mercadoLivreLogout: () => Promise<void>
-  onMercadoLivreStatus: (callback: (status: string) => void) => () => void
-
   // Produtos
   productGetAll: () => Promise<any[]>
   productGetById: (id: number) => Promise<any>
