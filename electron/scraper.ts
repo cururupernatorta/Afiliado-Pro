@@ -4,6 +4,7 @@ import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
 import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
+import { MercadoLivreApi } from './mercadoLivreApi'
 import { humanizeDescription } from './humanize'
 
 const DESKTOP_UA =
@@ -21,10 +22,12 @@ interface PriceExtractionOptions {
 export class ScraperManager {
   public affiliateManager: AffiliateManager
   private dbManager: DatabaseManager
+  private mercadoLivreApi: MercadoLivreApi
 
   constructor(affiliateManager: AffiliateManager, dbManager: DatabaseManager) {
     this.affiliateManager = affiliateManager
     this.dbManager = dbManager
+    this.mercadoLivreApi = new MercadoLivreApi(dbManager)
   }
 
   async scrapeProduct(url: string): Promise<Partial<Product>> {
@@ -274,6 +277,16 @@ export class ScraperManager {
   }
 
   private async scrapeMercadoLivre(url: string): Promise<Partial<Product>> {
+    // API oficial primeiro: ela devolve nome, imagem, preço e desconto real
+    // sem depender da página, que o Mercado Livre vem barrando. Cobre URL de
+    // catálogo (/p/MLB...); anúncio individual não é atendido pela API e cai
+    // na raspagem logo abaixo.
+    const fromApi = await this.mercadoLivreApi.fetchProduct(url)
+    if (fromApi) {
+      log.info(`Produto do Mercado Livre obtido pela API oficial: ${fromApi.title}`)
+      return fromApi
+    }
+
     const { $, html } = await this.fetchPage(url)
 
     if (this.looksBlocked(html)) {
