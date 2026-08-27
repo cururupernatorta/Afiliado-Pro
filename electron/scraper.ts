@@ -645,8 +645,32 @@ export class ScraperManager {
         }
 
         // Mercado Livre migrou os cards de oferta pro componente "poly-card".
+        //
+        // A página /ofertas sem filtro é a vitrine geral do site: das ~45
+        // ofertas dela, só uma mão cheia bate com um nicho específico, e como
+        // ela muda devagar são sempre as mesmas (o que explicava a captura
+        // repetitiva vista nos logs). Pedindo por categoria, a mesma página
+        // volta cheia do nicho — 25 ofertas só de mouse, por exemplo. A
+        // categoria vem do preditor do próprio Mercado Livre a partir das
+        // palavras-chave configuradas.
+        //
+        // Vale lembrar que a busca por palavra-chave da API oficial foi
+        // descontinuada por eles ("não haverá substituição", na documentação),
+        // e lista.mercadolivre.com.br responde com página de verificação de
+        // tráfego — /ofertas é o caminho que continua aberto.
         case 'mercado_livre': {
-          const mlUrl = `https://www.mercadolivre.com.br/ofertas`
+          const categories = new Set<string>()
+          for (const keyword of keywords.slice(0, 4)) {
+            const categoryId = await this.mercadoLivreApi.resolveCategoryId(keyword)
+            if (categoryId) categories.add(categoryId)
+          }
+
+          const dealUrls = categories.size > 0
+            ? [...categories].map((c) => `https://www.mercadolivre.com.br/ofertas?category=${c}`)
+            : ['https://www.mercadolivre.com.br/ofertas']
+
+          const seenUrls = new Set<string>()
+          for (const mlUrl of dealUrls) {
           const { $: $ml } = await this.fetchPage(mlUrl)
           $ml('.poly-card').each((_, el) => {
             const titleEl = $ml(el).find('a.poly-component__title').first()
@@ -657,9 +681,14 @@ export class ScraperManager {
             const imageUrl = $ml(el).find('.poly-component__picture').first().attr('src')
             // Mesma lógica da Amazon: a página "ofertas" lista muita coisa sem desconto
             // real — só captura se o preço riscado for de fato maior que o atual.
-            if (title && link && price > 0 && originalPrice > price) {
+            if (title && link && price > 0 && originalPrice > price && !seenUrls.has(link)) {
+              // O filtro por título continua valendo mesmo pedindo por
+              // categoria: o preditor do Mercado Livre erra de vez em quando
+              // (nos testes, "teclado mecânico" caiu em Águas Minerais), e sem
+              // isso viriam ofertas fora do nicho.
               const matchesNiche = keywords.some((k) => title.toLowerCase().includes(k.toLowerCase()))
               if (matchesNiche) {
+                seenUrls.add(link)
                 results.push({
                   title,
                   price,
@@ -673,6 +702,7 @@ export class ScraperManager {
               }
             }
           })
+          }
           break
         }
 

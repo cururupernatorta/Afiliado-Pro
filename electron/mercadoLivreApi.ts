@@ -33,6 +33,9 @@ export class MercadoLivreApi {
   // Um lote da busca automática viraria dezenas de avisos idênticos no sino
   // se cada produto reclamasse da mesma coisa.
   private lastNotifiedReason: string | null = null
+  // Categoria de uma palavra-chave não muda; sem cache seria uma chamada extra
+  // a cada busca automática, de hora em hora, pro mesmo resultado.
+  private categoryCache = new Map<string, string | null>()
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager
@@ -86,6 +89,41 @@ export class MercadoLivreApi {
         'Falha ao autenticar na API do Mercado Livre — confira o App ID e o Secret em Configurações',
         detail
       )
+      return null
+    }
+  }
+
+  /**
+   * Descobre a categoria do Mercado Livre correspondente a uma palavra-chave,
+   * usando o preditor de categorias deles. Serve pra pedir a página de ofertas
+   * filtrada por categoria (`/ofertas?category=...`), que traz produtos do
+   * nicho em vez da vitrine genérica — na prática a diferença entre 4 e 25
+   * ofertas relevantes por busca.
+   *
+   * O preditor erra às vezes ("teclado mecânico" devolveu Águas Minerais nos
+   * testes), então quem usa isso deve continuar filtrando pelos títulos.
+   */
+  async resolveCategoryId(keyword: string): Promise<string | null> {
+    const key = keyword.trim().toLowerCase()
+    if (!key) return null
+    if (this.categoryCache.has(key)) return this.categoryCache.get(key)!
+
+    const token = await this.getToken()
+    if (!token) return null
+
+    try {
+      const { data } = await axios.get(`${API_BASE}/sites/MLB/domain_discovery/search`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { limit: 1, q: keyword },
+        timeout: 15000,
+      })
+      const categoryId: string | null = Array.isArray(data) && data[0]?.category_id ? data[0].category_id : null
+      this.categoryCache.set(key, categoryId)
+      if (categoryId) log.info(`Mercado Livre: "${keyword}" -> categoria ${categoryId} (${data[0].category_name})`)
+      return categoryId
+    } catch (error: any) {
+      log.warn(`Não consegui descobrir a categoria do Mercado Livre para "${keyword}":`, error?.response?.status || error.message)
+      this.categoryCache.set(key, null)
       return null
     }
   }
