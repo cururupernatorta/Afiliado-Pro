@@ -13,7 +13,7 @@ import Logs from './pages/Logs'
 import { useAppStore } from './stores/appStore'
 
 function App() {
-  const { setWhatsappStatus, setWhatsappQrCode, setTelegramStatus } = useAppStore()
+  const { setWhatsappStatus, setWhatsappQrCode, setTelegramStatus, setMercadoLivreStatus } = useAppStore()
 
   // Esses listeners viviam dentro de Conexoes.tsx, então só captavam eventos
   // enquanto o usuário estava naquela aba — o React Router desmonta a página
@@ -29,17 +29,20 @@ function App() {
       if (s.qrCode) setWhatsappQrCode(s.qrCode)
     })
     window.electronAPI.telegramGetStatus().then((s) => setTelegramStatus(s.status))
+    window.electronAPI.mercadoLivreGetStatus().then((status) => setMercadoLivreStatus(status))
 
     const unsubQr = window.electronAPI.onWhatsAppQrCode((qr) => setWhatsappQrCode(qr))
     const unsubStatus = window.electronAPI.onWhatsAppStatus((status) => setWhatsappStatus(status as any))
     const unsubTelegramStatus = window.electronAPI.onTelegramStatus((status) => setTelegramStatus(status as any))
+    const unsubMercadoLivreStatus = window.electronAPI.onMercadoLivreStatus((status) => setMercadoLivreStatus(status as any))
 
     return () => {
       unsubQr()
       unsubStatus()
       unsubTelegramStatus()
+      unsubMercadoLivreStatus()
     }
-  }, [setWhatsappStatus, setWhatsappQrCode, setTelegramStatus])
+  }, [setWhatsappStatus, setWhatsappQrCode, setTelegramStatus, setMercadoLivreStatus])
 
   return (
     <>

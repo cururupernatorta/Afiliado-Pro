@@ -400,6 +400,10 @@ const setupIpcHandlers = (): void => {
   )
   ipcMain.handle('telegram:sendCode', (_, code: string) => telegramManager.sendCode(code))
 
+  ipcMain.handle('mercadolivre:getStatus', () => affiliateManager.mercadoLivreSession.getStatus())
+  ipcMain.handle('mercadolivre:login', () => affiliateManager.mercadoLivreSession.openLoginWindow())
+  ipcMain.handle('mercadolivre:logout', () => affiliateManager.mercadoLivreSession.logout())
+
   ipcMain.handle('product:getAll', () => dbManager.getAllProducts())
   ipcMain.handle('product:getById', (_, id: number) => dbManager.getProductById(id))
   ipcMain.handle('product:create', async (_, data) => {

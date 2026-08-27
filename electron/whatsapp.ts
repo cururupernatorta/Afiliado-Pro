@@ -9,6 +9,7 @@ import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
 import { sendToRenderer } from './utils'
 import { autoRepostProduct } from './messageHelper'
+import { bufferMessages, selectRecoverableMessages, trimProcessedIds } from './historyRecovery'
 
 export class WhatsAppManager {
   private dbManager: DatabaseManager
@@ -20,6 +21,20 @@ export class WhatsAppManager {
   private authPath: string
   private reconnectAttempts: number = 0
   private maxReconnectAttempts: number = 5
+
+  // Mensagens que o WhatsApp entrega na sincronização de histórico, guardadas
+  // por grupo/canal. Servem pra duas recuperações: (1) o que passou enquanto o
+  // app estava fechado ou o WhatsApp caído — como só processamos mensagens
+  // novas em tempo real, cada queda (a cada 30-90min, segundo os logs reais)
+  // era uma janela cega permanente; (2) o histórico recente de um grupo que
+  // acabou de ser marcado como monitorado, que antes só valia dali pra frente.
+  private historyBuffer = new Map<string, proto.IWebMessageInfo[]>()
+  private processedHistoryIds = new Set<string>()
+  // Janela curta de propósito: recuperar oferta de dias atrás encheria os
+  // grupos de destino com promoção provavelmente vencida.
+  private readonly HISTORY_MAX_AGE_MS = 12 * 60 * 60 * 1000
+  private readonly HISTORY_MAX_PER_GROUP = 30
+  private readonly PROCESSED_IDS_CAP = 5000
 
   constructor(dbManager: DatabaseManager, queueManager: QueueManager, scraperManager: ScraperManager, userDataPath: string) {
     this.dbManager = dbManager
@@ -125,6 +140,14 @@ export class WhatsAppManager {
         await Promise.all(messages.map((msg) => this.handleIncomingMessage(msg)))
       })
 
+      // Sincronização de histórico: é por aqui que chega o que passou nos
+      // grupos enquanto o app estava fora do ar. Guarda tudo no buffer (pra
+      // quem for monitorado depois) e já processa o que é de grupo monitorado.
+      this.sock.ev.on('messaging-history.set', async ({ messages }) => {
+        this.bufferHistoryMessages(messages)
+        await this.recoverMonitoredFromHistory(messages, 'reconexão')
+      })
+
     } catch (error) {
       log.error('Erro ao conectar WhatsApp:', error)
       this.status = 'disconnected'
@@ -212,6 +235,17 @@ export class WhatsAppManager {
       monitored: enabled,
     })
     log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo/canal WhatsApp: ${groupName}`)
+
+    // Ao ligar o monitoramento, aproveita o que já veio na sincronização de
+    // histórico dessa sessão em vez de só valer dali pra frente. Roda solto
+    // (sem await) pra não segurar o clique do toggle na tela enquanto raspa.
+    if (enabled) {
+      const buffered = this.historyBuffer.get(groupId)
+      if (buffered?.length) {
+        void this.recoverMonitoredFromHistory(buffered, `monitoramento ativado em ${groupName}`)
+          .catch((err) => log.warn('Erro ao recuperar histórico do grupo recém-monitorado:', err))
+      }
+    }
   }
 
   // Não existe API no Baileys pra listar todos os canais que a conta segue —
@@ -315,6 +349,53 @@ export class WhatsAppManager {
       })
     } else {
       await this.sock.sendMessage(groupId, { text: message })
+    }
+  }
+
+  private bufferHistoryMessages(messages: proto.IWebMessageInfo[]): void {
+    bufferMessages(this.historyBuffer, messages, this.HISTORY_MAX_AGE_MS, this.HISTORY_MAX_PER_GROUP)
+  }
+
+  // Processa mensagens antigas como se fossem novas, mas só as de grupo
+  // monitorado, dentro da janela de tempo e com teto de quantidade. A
+  // deduplicação por URL no banco garante que nada que já virou produto seja
+  // capturado (nem repostado) de novo.
+  private async recoverMonitoredFromHistory(
+    messages: proto.IWebMessageInfo[],
+    reason: string
+  ): Promise<void> {
+    const monitoredIds = new Set(
+      this.dbManager.getMonitoredGroups('whatsapp').map((g) => g.group_id)
+    )
+
+    const toProcess = selectRecoverableMessages(messages, {
+      monitoredIds,
+      alreadyProcessedIds: this.processedHistoryIds,
+      maxAgeMs: this.HISTORY_MAX_AGE_MS,
+      maxPerGroup: this.HISTORY_MAX_PER_GROUP,
+    })
+
+    for (const msg of toProcess) {
+      if (msg.key?.id) this.processedHistoryIds.add(msg.key.id)
+    }
+    trimProcessedIds(this.processedHistoryIds, this.PROCESSED_IDS_CAP)
+
+    if (toProcess.length === 0) return
+
+    log.info(`Recuperando ${toProcess.length} mensagem(ns) do histórico do WhatsApp (${reason})`)
+    this.dbManager.addLog({
+      type: 'info',
+      platform: 'whatsapp',
+      message: `Verificando ${toProcess.length} mensagem(ns) recentes de grupos monitorados (${reason})`,
+      details: 'Ofertas já capturadas antes são ignoradas automaticamente.',
+    })
+
+    // Em série, não em paralelo: recuperação pode ter dezenas de mensagens de
+    // uma vez, e cada uma dispara raspagem + geração de link (que no caso do
+    // Mercado Livre abre uma janela de navegador). Em paralelo isso viraria
+    // uma rajada tanto pro site quanto pra memória do app.
+    for (const msg of toProcess) {
+      await this.handleIncomingMessage(msg)
     }
   }
 

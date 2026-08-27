@@ -1,13 +1,16 @@
 import { DatabaseManager } from './database'
+import { MercadoLivreSessionManager } from './mercadoLivreSession'
 import axios from 'axios'
 import log from 'electron-log'
 import crypto from 'crypto'
 
 export class AffiliateManager {
   private dbManager: DatabaseManager
+  readonly mercadoLivreSession: MercadoLivreSessionManager
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager
+    this.mercadoLivreSession = new MercadoLivreSessionManager(dbManager)
   }
 
   async convertLink(originalUrl: string, store: string): Promise<string | null> {
@@ -15,7 +18,7 @@ export class AffiliateManager {
     try {
       switch (store) {
         case 'shopee': return await this.convertShopee(originalUrl, config)
-        case 'mercado_livre': return this.convertMercadoLivre(originalUrl, config)
+        case 'mercado_livre': return await this.convertMercadoLivre(originalUrl, config)
         case 'amazon': return await this.convertAmazon(originalUrl, config)
         case 'aliexpress': return await this.convertAliExpress(originalUrl, config)
         default: return null
@@ -90,11 +93,20 @@ export class AffiliateManager {
   // Gerador de Links/Central de Afiliados é quem gera esses links — por isso
   // aqui só remonta a URL do produto com os dois parâmetros da conta do
   // usuário, do mesmo jeito que os links gerados pela própria central ficam.
-  private convertMercadoLivre(url: string, config: any): string | null {
+  private async convertMercadoLivre(url: string, config: any): Promise<string | null> {
     if (!config.mercado_livre_matt_tool) {
       log.warn('matt_tool do Mercado Livre não configurado')
       return null
     }
+
+    // Prioridade pro link "social" (o formato que o Alan pediu, com a
+    // vitrine/perfil) usando a sessão logada de verdade — se não estiver
+    // logado, ou a automação falhar por qualquer motivo, cai pro link
+    // simples (URL do produto + matt_tool/matt_word), que já é validado como
+    // um formato de afiliado oficial do Mercado Livre, só sem a vitrine.
+    const socialLink = await this.mercadoLivreSession.generateAffiliateLink(url)
+    if (socialLink) return socialLink
+
     try {
       const urlObj = new URL(url)
       urlObj.searchParams.set('matt_tool', config.mercado_livre_matt_tool)
