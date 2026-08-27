@@ -36,6 +36,20 @@ export class MercadoLivreApi {
   // busca automática viraria dezenas de avisos idênticos no sino.
   private warnedMissingCredentials = false
 
+  // Disjuntor. Testado em 2026-08-27 com credenciais reais: o Mercado Livre
+  // responde 403 PolicyAgent em /items, /products e /sites/*/search TANTO com
+  // token de aplicação (client_credentials) QUANTO com token de usuário
+  // autorizado (authorization_code) — enquanto /users/me responde 200, ou
+  // seja, o token é válido e o bloqueio é de política deles, não de permissão
+  // que dê pra ajustar no painel. Sem disjuntor, cada produto gastaria uma
+  // chamada que já se sabe que falha e escreveria um aviso no sino (um lote
+  // de 20 ofertas por hora = 20 avisos inúteis). O código fica dormente,
+  // pronto pra voltar sozinho caso o Mercado Livre libere o acesso.
+  private consecutiveFailures = 0
+  private pausedUntil = 0
+  private readonly FAILURES_BEFORE_PAUSE = 3
+  private readonly PAUSE_MS = 60 * 60 * 1000
+
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager
   }
@@ -104,6 +118,8 @@ export class MercadoLivreApi {
    * algumas máquinas/IPs.
    */
   async fetchProduct(url: string): Promise<Partial<Product> | null> {
+    if (Date.now() < this.pausedUntil) return null
+
     const itemId = extractItemId(url)
     if (!itemId) {
       log.warn(`Não consegui extrair o ID do item do Mercado Livre da URL: ${url}`)
@@ -130,6 +146,9 @@ export class MercadoLivreApi {
       const originalPrice = Number(data?.original_price)
       const hasRealDiscount = Number.isFinite(originalPrice) && originalPrice > price
 
+      this.consecutiveFailures = 0
+      this.pausedUntil = 0
+
       return {
         title: data?.title || 'Produto Mercado Livre',
         price,
@@ -151,12 +170,21 @@ export class MercadoLivreApi {
       if (status === 401 || status === 403) this.token = null
 
       log.warn(`API do Mercado Livre falhou para ${itemId} (HTTP ${status}):`, detail)
-      this.dbManager.addLog({
-        type: 'warning',
-        platform: 'system',
-        message: `API do Mercado Livre não retornou o produto (HTTP ${status ?? '?'})`,
-        details: `${detail} | Item: ${itemId}`,
-      })
+
+      this.consecutiveFailures++
+      if (this.consecutiveFailures >= this.FAILURES_BEFORE_PAUSE) {
+        this.pausedUntil = Date.now() + this.PAUSE_MS
+        this.consecutiveFailures = 0
+        this.dbManager.addLog({
+          type: 'warning',
+          platform: 'system',
+          message: `API do Mercado Livre indisponível — pausando as consultas por ${this.PAUSE_MS / 60000} minutos`,
+          details:
+            `HTTP ${status ?? '?'}: ${detail}. ` +
+            'O Mercado Livre bloqueia a leitura de catálogo por política (confirmado com token de aplicação e de usuário). ' +
+            'Os produtos continuam sendo lidos por raspagem enquanto isso.',
+        })
+      }
       return null
     }
   }
