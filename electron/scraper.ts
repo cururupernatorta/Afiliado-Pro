@@ -118,6 +118,13 @@ export class ScraperManager {
       'robot check',
       'validate your request',
       'request blocked',
+      // O Mercado Livre não usa captcha: ele redireciona pra uma página de
+      // "verificação de conta" respondendo HTTP 200, sem nenhum dado do
+      // produto. Sem esses dois sinais o scraper seguia em frente, achava
+      // preço 0 e culpava o layout da página ("não consegui extrair o preço"),
+      // escondendo que o acesso é que foi barrado.
+      'suspicious-traffic',
+      'account-verification',
     ]
     return signals.some((s) => lower.includes(s))
   }
@@ -270,7 +277,11 @@ export class ScraperManager {
     const { $, html } = await this.fetchPage(url)
 
     if (this.looksBlocked(html)) {
-      throw new Error('O Mercado Livre bloqueou o acesso (captcha/anti-bot). Tente novamente mais tarde ou insira o produto manualmente.')
+      throw new Error(
+        'O Mercado Livre bloqueou o acesso automático (página de verificação de conta / tráfego suspeito). ' +
+        'Costuma passar sozinho depois de algumas horas sem tentar. Enquanto isso, cadastre o produto ' +
+        'manualmente informando o preço.'
+      )
     }
 
     const title = $('meta[property="og:title"]').attr('content') || $('h1').first().text().trim()
