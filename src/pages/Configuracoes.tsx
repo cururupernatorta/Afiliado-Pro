@@ -47,6 +47,7 @@ export default function Configuracoes() {
     max_delay_seconds: 15,
     auto_convert_links: true,
     auto_repost_enabled: false,
+    mercado_livre_browser_automation: false,
     stealth_mode: false,
     stealth_start_hour: 9,
     stealth_end_hour: 22,
@@ -123,6 +124,7 @@ export default function Configuracoes() {
           // sempre batia com 1 OU 0 (ficava sempre ligado). !! resolve os dois.
           auto_convert_links: !!cfg.auto_convert_links,
           auto_repost_enabled: !!cfg.auto_repost_enabled,
+          mercado_livre_browser_automation: !!cfg.mercado_livre_browser_automation,
           stealth_mode: !!cfg.stealth_mode,
           stealth_start_hour: cfg.stealth_start_hour || 9,
           stealth_end_hour: cfg.stealth_end_hour || 22,
@@ -202,6 +204,7 @@ export default function Configuracoes() {
         max_delay_seconds: formData.max_delay_seconds,
         auto_convert_links: formData.auto_convert_links ? 1 : 0,
         auto_repost_enabled: formData.auto_repost_enabled ? 1 : 0,
+        mercado_livre_browser_automation: formData.mercado_livre_browser_automation ? 1 : 0,
         stealth_mode: formData.stealth_mode ? 1 : 0,
         stealth_start_hour: formData.stealth_start_hour,
         stealth_end_hour: formData.stealth_end_hour,
@@ -533,6 +536,23 @@ export default function Configuracoes() {
             </div>
             <button onClick={() => updateField('auto_convert_links', !formData.auto_convert_links)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
               {formData.auto_convert_links ? <ToggleRight className="w-7 h-7 text-primary" /> : <ToggleLeft className="w-7 h-7 text-muted-foreground" />}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+            <div className="flex items-center gap-3">
+              <Link2 className="w-5 h-5 text-amber-400" />
+              <div>
+                <p className="text-sm font-medium text-foreground">Automação de navegador no Mercado Livre</p>
+                <p className="text-xs text-muted-foreground">
+                  Abre a página do produto num navegador embutido para ler o preço e gerar o link com vitrine,
+                  usando a conta conectada em Conexões. Deixe desligado, salvo se souber o que está fazendo:
+                  esse tráfego automatizado pode fazer o Mercado Livre bloquear seu acesso — ou sinalizar sua conta.
+                </p>
+              </div>
+            </div>
+            <button onClick={() => updateField('mercado_livre_browser_automation', !formData.mercado_livre_browser_automation)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
+              {formData.mercado_livre_browser_automation ? <ToggleRight className="w-7 h-7 text-amber-400" /> : <ToggleLeft className="w-7 h-7 text-muted-foreground" />}
             </button>
           </div>
         </div>

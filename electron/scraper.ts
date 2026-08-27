@@ -327,12 +327,14 @@ export class ScraperManager {
     }
 
     // 2ª tentativa com browser de verdade, reusando a sessão logada do
-    // Mercado Livre (Conexões). Confirmado ao vivo que o ML responde a
-    // requisição simples com uma página de "tráfego suspeito" em vez do
-    // produto; um navegador com a sessão real do usuário é bem menos provável
-    // de ser barrado assim. Se o usuário não tiver logado, a partição só está
-    // vazia — continua funcionando como um headless comum.
-    if (price === 0) {
+    // Mercado Livre (Conexões). DESLIGADA por padrão: carregar a página num
+    // navegador (ainda mais autenticado) a cada produto é justamente o padrão
+    // que o anti-bot do Mercado Livre procura, e o bloqueio que apareceu em
+    // várias máquinas coincidiu com o lançamento desse fallback — antes dele,
+    // a raspagem simples vinha funcionando. Quem quiser assumir o risco liga
+    // em Configurações.
+    const browserAutomationEnabled = !!this.dbManager.getConfig().mercado_livre_browser_automation
+    if (price === 0 && browserAutomationEnabled) {
       try {
         const { $, html } = await this.fetchPageHeadless(url, false, { partition: ML_PARTITION })
         if (!this.looksBlocked(html)) {

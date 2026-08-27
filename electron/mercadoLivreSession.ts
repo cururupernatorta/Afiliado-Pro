@@ -235,6 +235,11 @@ export class MercadoLivreSessionManager {
   // inspecionar) — cada etapa avisa exatamente onde travou, pra dar pra
   // ajustar com base num log real em vez de adivinhar de novo.
   private async generateAffiliateLinkUnqueued(productUrl: string): Promise<string | null> {
+    // Desligado por padrão — ver o comentário da coluna
+    // mercado_livre_browser_automation em database.ts. Sem isso, o link sai no
+    // formato simples (matt_tool/matt_word), que continua sendo afiliado
+    // válido, só sem a vitrine.
+    if (!this.dbManager.getConfig().mercado_livre_browser_automation) return null
     if (Date.now() < this.pausedUntil) return null
 
     if (!(await this.isLoggedIn())) {
