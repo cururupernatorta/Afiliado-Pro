@@ -314,7 +314,7 @@ export default function Configuracoes() {
         { key: 'mercado_livre_matt_tool', label: 'matt_tool', placeholder: 'Ex: 55658638' },
         { key: 'mercado_livre_matt_word', label: 'matt_word', placeholder: 'Ex: seuperfil' },
       ],
-      help: 'O Mercado Livre não tem um "Affiliate ID" único — gere um link em mercadolivre.com.br/afiliados (Central de Afiliados → Gerador de Links), abra esse link e copie os valores de matt_tool e matt_word que aparecem na URL final.',
+      help: 'O Mercado Livre não tem um "Affiliate ID" único — gere um link em mercadolivre.com.br/afiliados (Central de Afiliados → Gerador de Links), abra esse link e copie os valores de matt_tool e matt_word que aparecem na URL final. Preencha os dois mesmo já tendo feito login do Mercado Livre em Conexões: o login serve pra gerar o link com a vitrine (aquela página com foto de perfil), e estes campos são o formato usado sempre que a vitrine não puder ser gerada.',
     },
     {
       name: 'Amazon',

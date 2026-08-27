@@ -21,6 +21,14 @@ interface RenderOptions {
   userAgent?: string
   /** Se informado, faz polling do HTML até esse padrão aparecer (ou até `waitMs` esgotar) */
   readyPattern?: RegExp
+  /**
+   * Partição de sessão a usar em vez de uma descartável. Serve pra raspar com
+   * uma sessão logada de verdade (ex: a do Mercado Livre), que sites com
+   * anti-bot tratam muito melhor que uma sessão anônima e sem histórico.
+   * IMPORTANTE: quando informada, a sessão NÃO é limpa no final — limpar
+   * apagaria o login que o usuário fez à mão.
+   */
+  partition?: string
 }
 
 /**
@@ -33,7 +41,7 @@ interface RenderOptions {
  * scraping estático falhar.
  */
 export async function renderPageHtml(url: string, options: RenderOptions = {}): Promise<string> {
-  const { waitMs = 3000, timeoutMs = 25000, userAgent, readyPattern } = options
+  const { waitMs = 3000, timeoutMs = 25000, userAgent, readyPattern, partition } = options
 
   let win: BrowserWindow | null = null
   // Partição descartável (não prefixada com "persist:") em vez da sessão padrão do
@@ -46,7 +54,8 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
   // Electron nunca libera o objeto Session de uma partição depois de criada — um
   // nome novo por chamada vazaria memória lentamente num bot que roda dias a fio.
   // clearStorageData() abaixo já limpa cookies/cache antes de cada uso do pool.
-  const partitionName = `scrape-${Math.floor(Math.random() * PARTITION_POOL_SIZE)}`
+  const partitionName = partition ?? `scrape-${Math.floor(Math.random() * PARTITION_POOL_SIZE)}`
+  const isPersistentSession = !!partition
 
   const renderPromise = (async (): Promise<string> => {
     win = new BrowserWindow({
@@ -100,10 +109,14 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
     if (win && !(win as BrowserWindow).isDestroyed()) {
       ;(win as BrowserWindow).destroy()
     }
-    try {
-      await session.fromPartition(partitionName).clearStorageData()
-    } catch (err) {
-      log.warn('Erro ao limpar sessão descartável do headless browser:', err)
+    // Só limpa sessão descartável: numa partição persistente (login real do
+    // usuário) isso apagaria os cookies da conta dele.
+    if (!isPersistentSession) {
+      try {
+        await session.fromPartition(partitionName).clearStorageData()
+      } catch (err) {
+        log.warn('Erro ao limpar sessão descartável do headless browser:', err)
+      }
     }
   }
 }

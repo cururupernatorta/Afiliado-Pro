@@ -9,7 +9,8 @@ import { sendToRenderer } from './utils'
 // a reinício da máquina e a update do app (o instalador NSIS não apaga
 // userData). Não usar "persist:" (como o headlessScraper.ts faz de propósito,
 // pra sessões descartáveis) faria login cair a cada reinício do app.
-const PARTITION = 'persist:mercadolivre-afiliados'
+export const ML_PARTITION = 'persist:mercadolivre-afiliados'
+const PARTITION = ML_PARTITION
 const AFFILIATE_HOME_URL = 'https://www.mercadolivre.com.br/afiliados'
 
 // UA de navegador normal: sem isso o Electron anuncia "Electron/3x" numa

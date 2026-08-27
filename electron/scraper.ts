@@ -4,6 +4,7 @@ import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
 import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
+import { ML_PARTITION } from './mercadoLivreSession'
 import { humanizeDescription } from './humanize'
 
 const DESKTOP_UA =
@@ -90,7 +91,7 @@ export class ScraperManager {
   private async fetchPageHeadless(
     url: string,
     useMobileUA = false,
-    options: { waitMs?: number; readyPattern?: RegExp } = {}
+    options: { waitMs?: number; readyPattern?: RegExp; partition?: string } = {}
   ): Promise<{ $: cheerio.CheerioAPI; html: string }> {
     log.info(`Scraping estático falhou/insuficiente — tentando renderizar com browser headless: ${url}`)
     const html = await renderPageHtml(url, {
@@ -98,6 +99,7 @@ export class ScraperManager {
       waitMs: options.waitMs ?? 3500,
       timeoutMs: 25000,
       readyPattern: options.readyPattern,
+      partition: options.partition,
     })
     return { $: cheerio.load(html), html }
   }
@@ -118,6 +120,13 @@ export class ScraperManager {
       'robot check',
       'validate your request',
       'request blocked',
+      // Mercado Livre: em vez de captcha, ele redireciona pra uma página de
+      // "verificação de conta" com HTTP 200 e nenhum dado do produto —
+      // confirmado ao vivo. Sem esses sinais, o scraper seguia em frente,
+      // achava preço 0 e culpava o layout da página ("não consegui extrair o
+      // preço"), escondendo que o acesso é que foi barrado.
+      'suspicious-traffic',
+      'account-verification',
     ]
     return signals.some((s) => lower.includes(s))
   }
@@ -266,17 +275,11 @@ export class ScraperManager {
     }
   }
 
-  private async scrapeMercadoLivre(url: string): Promise<Partial<Product>> {
-    const { $, html } = await this.fetchPage(url)
-
-    if (this.looksBlocked(html)) {
-      throw new Error('O Mercado Livre bloqueou o acesso (captcha/anti-bot). Tente novamente mais tarde ou insira o produto manualmente.')
-    }
-
+  private extractMercadoLivreFields($: cheerio.CheerioAPI) {
     const title = $('meta[property="og:title"]').attr('content') || $('h1').first().text().trim()
-
     const price = this.extractPrice($, {
       metaSelectors: ['meta[property="product:price:amount"]'],
+      jsonPatterns: [/"price":\s*"?([0-9.,]+)"?/i],
       cssSelectors: [
         '.andes-money-amount__fraction',
         'span[class*="price"]',
@@ -284,13 +287,64 @@ export class ScraperManager {
       ],
       bodyFallback: true,
     })
-
     const imageUrl =
       $('meta[property="og:image"]').attr('content') ||
       $('img[class*="gallery"]').first().attr('src') ||
       $('img').first().attr('src')
-
     const description = $('meta[property="og:description"]').attr('content') || ''
+    return { title, price, imageUrl, description }
+  }
+
+  private async scrapeMercadoLivre(url: string): Promise<Partial<Product>> {
+    let title = '', price = 0, imageUrl: string | undefined, description = ''
+    let blocked = false
+
+    try {
+      const { $, html } = await this.fetchPage(url)
+      blocked = this.looksBlocked(html)
+      if (!blocked) {
+        const extracted = this.extractMercadoLivreFields($)
+        title = extracted.title
+        price = extracted.price
+        imageUrl = extracted.imageUrl
+        description = extracted.description
+      }
+    } catch (err) {
+      log.warn('Scraping estático do Mercado Livre falhou:', (err as Error).message)
+    }
+
+    // 2ª tentativa com browser de verdade, reusando a sessão logada do
+    // Mercado Livre (Conexões). Confirmado ao vivo que o ML responde a
+    // requisição simples com uma página de "tráfego suspeito" em vez do
+    // produto; um navegador com a sessão real do usuário é bem menos provável
+    // de ser barrado assim. Se o usuário não tiver logado, a partição só está
+    // vazia — continua funcionando como um headless comum.
+    if (price === 0) {
+      try {
+        const { $, html } = await this.fetchPageHeadless(url, false, { partition: ML_PARTITION })
+        if (!this.looksBlocked(html)) {
+          const extracted = this.extractMercadoLivreFields($)
+          if (extracted.price > 0) {
+            title = extracted.title || title
+            price = extracted.price
+            imageUrl = extracted.imageUrl || imageUrl
+            description = extracted.description || description
+            blocked = false
+          }
+        } else {
+          blocked = true
+        }
+      } catch (err) {
+        log.warn('Fallback headless do Mercado Livre também falhou:', (err as Error).message)
+      }
+    }
+
+    if (price === 0 && blocked) {
+      throw new Error(
+        'O Mercado Livre bloqueou o acesso automático (página de verificação de conta / tráfego suspeito). ' +
+        'Faça login do Mercado Livre em Conexões — isso costuma resolver — ou informe o preço manualmente.'
+      )
+    }
 
     if (price === 0) {
       throw new Error(
