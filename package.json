@@ -1,6 +1,6 @@
 {
   "name": "afiliado-pro",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Bot de automacao para afiliados - WhatsApp, Telegram, Scraping e Links de Afiliado",
   "main": "dist-electron/main/main.js",
   "author": "Afiliado Pro",
@@ -127,7 +127,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets/icon.ico"
@@ -155,7 +157,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "assets/icon.icns"
@@ -164,7 +169,9 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "category": "Office",

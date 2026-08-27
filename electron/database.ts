@@ -28,6 +28,8 @@ export interface Config {
   mercado_livre_affiliate_id?: string
   mercado_livre_matt_tool?: string
   mercado_livre_matt_word?: string
+  mercado_livre_client_id?: string
+  mercado_livre_client_secret?: string
   amazon_tag?: string
   aliexpress_app_key?: string
   aliexpress_app_secret?: string
@@ -267,6 +269,21 @@ export class DatabaseManager extends EventEmitter {
       }
     } catch (err) {
       log.error('Erro na migração mercado_livre_matt_tool/matt_word:', err)
+    }
+
+    // Migração: credenciais da API oficial do Mercado Livre. O scraping da
+    // página do produto passou a ser barrado por uma página de verificação de
+    // tráfego (confirmado ao vivo em três máquinas diferentes), então os dados
+    // do produto passam a vir da API oficial, que não sofre esse bloqueio.
+    try {
+      const columns = this.db.prepare("PRAGMA table_info(config)").all() as any[]
+      if (!columns.some((c) => c.name === 'mercado_livre_client_id')) {
+        this.db.exec('ALTER TABLE config ADD COLUMN mercado_livre_client_id TEXT')
+        this.db.exec('ALTER TABLE config ADD COLUMN mercado_livre_client_secret TEXT')
+        log.info('Migração: colunas mercado_livre_client_id/client_secret adicionadas à tabela config')
+      }
+    } catch (err) {
+      log.error('Erro na migração mercado_livre_client_id/client_secret:', err)
     }
 
     // Migração: adiciona template_id em ad_templates (biblioteca de templates

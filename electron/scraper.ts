@@ -5,6 +5,7 @@ import { AffiliateManager } from './affiliate'
 import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
 import { ML_PARTITION } from './mercadoLivreSession'
+import { MercadoLivreApi } from './mercadoLivreApi'
 import { humanizeDescription } from './humanize'
 
 const DESKTOP_UA =
@@ -22,10 +23,12 @@ interface PriceExtractionOptions {
 export class ScraperManager {
   public affiliateManager: AffiliateManager
   private dbManager: DatabaseManager
+  private mercadoLivreApi: MercadoLivreApi
 
   constructor(affiliateManager: AffiliateManager, dbManager: DatabaseManager) {
     this.affiliateManager = affiliateManager
     this.dbManager = dbManager
+    this.mercadoLivreApi = new MercadoLivreApi(dbManager)
   }
 
   async scrapeProduct(url: string): Promise<Partial<Product>> {
@@ -296,6 +299,16 @@ export class ScraperManager {
   }
 
   private async scrapeMercadoLivre(url: string): Promise<Partial<Product>> {
+    // API oficial primeiro: a raspagem da página do produto vem sendo barrada
+    // por uma página de verificação de tráfego (confirmado ao vivo, inclusive
+    // com sessão logada e navegador real), enquanto a API não sofre isso.
+    // Só cai pra raspagem se a API não estiver configurada ou falhar.
+    const fromApi = await this.mercadoLivreApi.fetchProduct(url)
+    if (fromApi) {
+      log.info(`Produto do Mercado Livre obtido pela API oficial: ${fromApi.title}`)
+      return fromApi
+    }
+
     let title = '', price = 0, imageUrl: string | undefined, description = ''
     let blocked = false
 
