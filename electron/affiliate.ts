@@ -418,9 +418,29 @@ export class AffiliateManager {
 
   detectStore(url: string): 'shopee' | 'mercado_livre' | 'amazon' | 'aliexpress' | null {
     const lowerUrl = url.toLowerCase()
-    if (lowerUrl.includes('shopee')) return 'shopee'
-    if (lowerUrl.includes('mercadolivre') || lowerUrl.includes('mercado-livre')) return 'mercado_livre'
-    if (lowerUrl.includes('amazon')) return 'amazon'
+
+    // Os encurtadores precisam estar aqui explicitamente: o nome da loja não
+    // aparece no domínio deles. "meli.la/xxxx" não contém "mercadolivre", e é
+    // justamente esse o formato que circula nos grupos de ofertas — o link era
+    // descartado como se não fosse de loja nenhuma, antes mesmo de qualquer
+    // tentativa de captura. Mesmo caso de amzn.to/a.co (Amazon) e shp.ee
+    // (Shopee).
+    if (lowerUrl.includes('shopee') || /(^|\/\/|\.)shp\.ee\//.test(lowerUrl)) return 'shopee'
+    if (
+      lowerUrl.includes('mercadolivre') ||
+      lowerUrl.includes('mercado-livre') ||
+      lowerUrl.includes('mercadolibre') ||
+      /(^|\/\/|\.)meli\.la\//.test(lowerUrl)
+    ) {
+      return 'mercado_livre'
+    }
+    if (
+      lowerUrl.includes('amazon') ||
+      /(^|\/\/|\.)amzn\.(to|eu)\//.test(lowerUrl) ||
+      /(^|\/\/|\.)a\.co\//.test(lowerUrl)
+    ) {
+      return 'amazon'
+    }
     if (lowerUrl.includes('aliexpress')) return 'aliexpress'
     return null
   }

@@ -32,9 +32,36 @@ const isDev = !app.isPackaged
 // usada tanto no envio de verdade quanto no preview, pra que o preview nunca mostre
 // o link original (não monetizado) quando o envio real vai gerar um afiliado.
 async function ensureAffiliateUrl(product: { id?: number; affiliate_url?: string; original_url: string }): Promise<string> {
+  const store = affiliateManager.detectStore(product.original_url)
+
+  // Produto capturado antes de a conta do Mercado Livre ser conectada ficou
+  // com o link no formato simples gravado no banco, e nunca era regerado — o
+  // app só gerava link pra produto que ainda não tinha nenhum. Na prática,
+  // tudo que a busca automática pegou antes do login continuava saindo sem a
+  // vitrine, mesmo depois de conectar. Aqui essa conversão é refeita uma vez,
+  // e só pro Mercado Livre com a conta conectada.
+  const linkAntigoDoML =
+    store === 'mercado_livre' && !!product.affiliate_url && !product.affiliate_url.includes('meli.la')
+  if (linkAntigoDoML) {
+    try {
+      const novo = await affiliateManager.mercadoLivreLink.generate(
+        product.original_url,
+        dbManager.getConfig().mercado_livre_matt_word
+      )
+      const link = novo?.shortUrl || novo?.longUrl
+      if (link) {
+        if (product.id) dbManager.updateProduct(product.id, { affiliate_url: link })
+        product.affiliate_url = link
+        log.info(`Link do Mercado Livre atualizado para o formato com vitrine: ${link}`)
+        return link
+      }
+    } catch (err) {
+      log.warn('Não consegui atualizar o link do Mercado Livre para o formato com vitrine:', err)
+    }
+  }
+
   if (product.affiliate_url) return product.affiliate_url
   try {
-    const store = affiliateManager.detectStore(product.original_url)
     if (store) {
       const affiliateUrl = await affiliateManager.convertLink(product.original_url, store)
       if (affiliateUrl) {
