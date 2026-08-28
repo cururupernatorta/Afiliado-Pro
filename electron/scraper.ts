@@ -5,6 +5,7 @@ import { AffiliateManager } from './affiliate'
 import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
 import { MercadoLivreApi } from './mercadoLivreApi'
+import { ShopeeApi } from './shopeeApi'
 import { humanizeDescription } from './humanize'
 
 const DESKTOP_UA =
@@ -23,11 +24,13 @@ export class ScraperManager {
   public affiliateManager: AffiliateManager
   private dbManager: DatabaseManager
   private mercadoLivreApi: MercadoLivreApi
+  private shopeeApi: ShopeeApi
 
   constructor(affiliateManager: AffiliateManager, dbManager: DatabaseManager) {
     this.affiliateManager = affiliateManager
     this.dbManager = dbManager
     this.mercadoLivreApi = new MercadoLivreApi(dbManager)
+    this.shopeeApi = new ShopeeApi(dbManager)
   }
 
   async scrapeProduct(url: string): Promise<Partial<Product>> {
@@ -221,6 +224,17 @@ export class ScraperManager {
   }
 
   private async scrapeShopee(url: string): Promise<Partial<Product>> {
+    // API oficial primeiro: a página da Shopee é 100% renderizada por
+    // JavaScript e responde a acesso automatizado com uma casca vazia e
+    // marcador de captcha — confirmado ao vivo, tanto no fetch estático quanto
+    // no browser headless. A API é a mesma que o app já usa pra gerar o link,
+    // e de quebra devolve o offerLink (link de afiliado) junto dos dados.
+    const fromApi = await this.shopeeApi.fetchProduct(url)
+    if (fromApi) {
+      log.info(`Produto da Shopee obtido pela API oficial: ${fromApi.title}`)
+      return fromApi
+    }
+
     // 1ª tentativa: scraping estático (rápido, leve). Shopee é um SPA, então isso
     // costuma falhar, mas é barato demais pra não tentar primeiro.
     let title = '', price = 0, imageUrl: string | undefined, description = ''

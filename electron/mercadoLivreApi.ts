@@ -27,6 +27,19 @@ export function extractCatalogProductId(url: string): string | null {
   return match ? match[1].toUpperCase() : null
 }
 
+/**
+ * Link encurtado do Mercado Livre — é o formato que mais aparece em grupo de
+ * ofertas, e nele o ID do produto não está visível, só no destino.
+ */
+export function isMercadoLivreShortLink(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.hostname.endsWith('meli.la') || /\/sec\//.test(u.pathname)
+  } catch {
+    return false
+  }
+}
+
 export class MercadoLivreApi {
   private dbManager: DatabaseManager
   private token: { value: string; expiresAt: number } | null = null
@@ -94,6 +107,37 @@ export class MercadoLivreApi {
   }
 
   /**
+   * Segue o redirecionamento de um link encurtado pra chegar na URL real do
+   * produto. Isso importa porque o que circula em grupo de ofertas é quase
+   * sempre link curto, e sem resolver o ID do produto nem aparece — a captura
+   * caía direto na raspagem, que o Mercado Livre bloqueia. O redirecionamento
+   * em si é respondido normalmente; é a página de produto que vem barrada.
+   */
+  private async resolveShortLink(url: string): Promise<string> {
+    if (!isMercadoLivreShortLink(url)) return url
+    try {
+      const response = await axios.get(url, {
+        maxRedirects: 10,
+        timeout: 15000,
+        validateStatus: () => true,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+        },
+      })
+      const finalUrl = response.request?.res?.responseUrl || response.request?.responseURL
+      if (typeof finalUrl === 'string' && finalUrl) {
+        log.info(`Link curto do Mercado Livre resolvido: ${finalUrl.substring(0, 120)}`)
+        return finalUrl
+      }
+      return url
+    } catch (err) {
+      log.warn('Não consegui resolver o link curto do Mercado Livre:', (err as Error).message)
+      return url
+    }
+  }
+
+  /**
    * Descobre a categoria do Mercado Livre correspondente a uma palavra-chave,
    * usando o preditor de categorias deles. Serve pra pedir a página de ofertas
    * filtrada por categoria (`/ofertas?category=...`), que traz produtos do
@@ -133,7 +177,8 @@ export class MercadoLivreApi {
    * não dá — quem chama cai de volta na raspagem.
    */
   async fetchProduct(url: string): Promise<Partial<Product> | null> {
-    const productId = extractCatalogProductId(url)
+    const resolvedUrl = await this.resolveShortLink(url)
+    const productId = extractCatalogProductId(resolvedUrl)
     // Anúncio individual (/MLB-...-_JM) não é atendido pela API com token de
     // aplicação; sai calado pra não poluir o log, já que a raspagem assume.
     if (!productId) return null

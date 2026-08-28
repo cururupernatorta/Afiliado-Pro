@@ -289,9 +289,19 @@ export default function Configuracoes() {
     try {
       await window.electronAPI.adTemplateAssign(platform, groupId, templateId)
       const resolved = await window.electronAPI.adTemplateGet(platform, groupId)
-      if (resolved) setAdTemplate(`${platform}:${groupId}`, resolved)
+      // Sem linha no banco significa que a associação não foi gravada; sem
+      // avisar, o dropdown só voltava sozinho pro valor anterior e parecia que
+      // "não deixa trocar de template".
+      if (!resolved) throw new Error('A associação não foi salva no banco')
+      setAdTemplate(`${platform}:${groupId}`, resolved)
+      // Recarrega a lista: se o template escolhido tinha sido apagado em outra
+      // tela, o dropdown estava mostrando uma opção que não existe mais.
+      await loadMessageTemplates()
     } catch (error) {
       console.error('Erro ao associar template:', error)
+      alert('Não consegui salvar o template para este grupo: ' + ((error as Error).message || 'erro desconhecido'))
+      await loadAutoSendTargets()
+      await loadMessageTemplates()
     }
   }
 

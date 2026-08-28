@@ -272,6 +272,28 @@ export class DatabaseManager extends EventEmitter {
       log.error('Erro na migração mercado_livre_matt_tool/matt_word:', err)
     }
 
+    // Migração: garante o índice único de ad_templates(platform, group_id).
+    // Bancos criados por versões antigas do app podem não ter esse índice, e
+    // sem ele a associação de template a grupo falhava calada (ver comentário
+    // em assignAdTemplate). Remove duplicatas antes, senão a criação do índice
+    // falha — mantém a linha mais recente de cada grupo.
+    try {
+      const idx = this.db.prepare("PRAGMA index_list(ad_templates)").all() as any[]
+      const hasUnique = idx.some((i) => i.unique === 1)
+      if (!hasUnique) {
+        this.db.exec(`
+          DELETE FROM ad_templates
+           WHERE id NOT IN (
+             SELECT MAX(id) FROM ad_templates GROUP BY platform, group_id
+           )
+        `)
+        this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_templates_group ON ad_templates(platform, group_id)')
+        log.info('Migração: índice único criado em ad_templates(platform, group_id)')
+      }
+    } catch (err) {
+      log.error('Erro na migração do índice único de ad_templates:', err)
+    }
+
     // Migração: credenciais da API oficial do Mercado Livre. A raspagem da
     // página do produto passou a ser barrada por uma página de verificação de
     // tráfego; a API não sofre isso.
@@ -518,16 +540,27 @@ export class DatabaseManager extends EventEmitter {
     // Se o id apontar pra um template que não existe mais (apagado em outra janela,
     // ou id obsoleto no front), trata como "nenhum" em vez de deixar a constraint de
     // chave estrangeira derrubar a operação com um erro.
-    const resolvedId = templateId !== null && this.getMessageTemplateById(templateId) ? templateId : null
-    const stmt = this.db.prepare(`
-      INSERT INTO ad_templates (platform, group_id, template_id, template_text)
-      VALUES (?, ?, ?, NULL)
-      ON CONFLICT(platform, group_id) DO UPDATE SET
-        template_id = excluded.template_id,
-        template_text = NULL,
-        updated_at = CURRENT_TIMESTAMP
-    `)
-    stmt.run(platform, groupId, resolvedId)
+    if (templateId !== null && !this.getMessageTemplateById(templateId)) {
+      throw new Error(`Template ${templateId} não existe mais — recarregue a lista de templates`)
+    }
+
+    // UPDATE e, só se não achou linha, INSERT. Antes isso era um único INSERT
+    // com ON CONFLICT(platform, group_id), que depende de existir índice único
+    // nessa dupla: em banco criado por versão antiga do app, sem esse índice, o
+    // SQLite recusa a cláusula inteira e a associação nunca era gravada — o
+    // dropdown da tela voltava sozinho pro valor anterior, sem explicação.
+    const updated = this.db.prepare(`
+      UPDATE ad_templates
+         SET template_id = ?, template_text = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE platform = ? AND group_id = ?
+    `).run(templateId, platform, groupId)
+
+    if (updated.changes === 0) {
+      this.db.prepare(`
+        INSERT INTO ad_templates (platform, group_id, template_id, template_text)
+        VALUES (?, ?, ?, NULL)
+      `).run(platform, groupId, templateId)
+    }
   }
 
   deleteAdTemplate(platform: string, groupId: string): void {
