@@ -127,8 +127,10 @@ export class ShopeeApi {
       return null
     }
 
+    // Campos conferidos no Explorer oficial da Shopee. Não existe nenhum campo
+    // de cupom/voucher — o preço com cupom simplesmente não é exposto pela API.
     const payload = JSON.stringify({
-      query: `{productOfferV2(shopId:${ids.shopId},itemId:${ids.itemId}){nodes{itemId shopId productName imageUrl priceMin priceMax priceDiscountRate offerLink productLink}}}`,
+      query: `{productOfferV2(shopId:${ids.shopId},itemId:${ids.itemId}){nodes{itemId shopId productName imageUrl price priceMin priceMax priceDiscountRate offerLink productLink}}}`,
     })
 
     try {
@@ -143,26 +145,26 @@ export class ShopeeApi {
         return null
       }
 
-      const price = Number(node.priceMin)
-      if (!Number.isFinite(price) || price <= 0) {
+      // `price` é o preço do anúncio; `priceMin` é o menor entre as variações
+      // e pode ser mais baixo do que o produto realmente custa na variação
+      // anunciada. Prefere `price` e só usa priceMin como reserva.
+      const price = [node.price, node.priceMin].map(Number).find((v) => Number.isFinite(v) && v > 0)
+      if (!price) {
         log.warn(`Shopee devolveu o produto ${ids.itemId} sem preço utilizável`)
         return null
       }
 
-      // priceDiscountRate vem em porcentagem (ex: 20 = 20% off). Só monta o
-      // "de/por" quando existe desconto real — nunca inventar preço cheio.
-      const discountRate = Number(node.priceDiscountRate)
-      const hasRealDiscount = Number.isFinite(discountRate) && discountRate > 0 && discountRate < 100
-      const originalPrice = hasRealDiscount
-        ? Math.round((price / (1 - discountRate / 100)) * 100) / 100
-        : undefined
-
+      // A Shopee informa a taxa de desconto (priceDiscountRate), mas NÃO o
+      // preço original. Calcular o "de" a partir da taxa produziria um valor
+      // que a loja nunca praticou (ex.: "De R$ 4.501,19"), que é exatamente o
+      // tipo de preço fabricado que este app não deve exibir. O desconto real
+      // continua aparecendo, em porcentagem, no texto do anúncio.
       this.lastNotifiedReason = null
 
       return {
         title: node.productName || 'Produto Shopee',
         price,
-        original_price: originalPrice,
+        original_price: undefined,
         image_url: node.imageUrl || undefined,
         description: '',
         original_url: node.productLink || resolvedUrl,
