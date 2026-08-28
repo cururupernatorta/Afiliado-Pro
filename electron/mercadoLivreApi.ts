@@ -18,6 +18,8 @@ import { DatabaseManager, Product } from './database'
 //    é atendida aqui; anúncio individual cai na raspagem.
 //  - GET /sites/MLB/search     -> 403, então a busca de ofertas continua sendo
 //    raspada.
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
 const OAUTH_URL = 'https://api.mercadolibre.com/oauth/token'
 const API_BASE = 'https://api.mercadolibre.com'
 
@@ -38,6 +40,30 @@ export function isMercadoLivreShortLink(url: string): boolean {
   } catch {
     return false
   }
+}
+
+/** Página de vitrine de um afiliado (o destino de um link meli.la). */
+export function isAffiliateStorefrontUrl(url: string): boolean {
+  return /mercadolivre\.com(\.br)?\/social\//i.test(url)
+}
+
+/**
+ * Descobre qual produto está sendo divulgado numa vitrine de afiliado.
+ *
+ * Isso importa porque o que circula nos grupos é o link de afiliado de OUTRA
+ * pessoa (meli.la/...), que aponta pra vitrine dela, não pra uma página de
+ * produto. Sem resolver isso, o app não conseguia nem ler os dados nem trocar
+ * pelo link de afiliado do próprio usuário — ele acabaria divulgando o link do
+ * concorrente.
+ *
+ * A vitrine lista vários produtos, mas o que veio no link é marcado com
+ * `card-featured` na URL do cartão (os demais são recomendações). Confirmado
+ * comparando dois links gerados por nós com o produto que os originou.
+ */
+export function extractFeaturedProductId(html: string): string | null {
+  const featured = html.match(/\/(?:p|up)\/(ML[A-Z]*\d+)[^"']*?card-featured/i)
+  if (featured) return featured[1].toUpperCase()
+  return null
 }
 
 export class MercadoLivreApi {
@@ -113,6 +139,36 @@ export class MercadoLivreApi {
    * caía direto na raspagem, que o Mercado Livre bloqueia. O redirecionamento
    * em si é respondido normalmente; é a página de produto que vem barrada.
    */
+  /**
+   * Transforma qualquer link do Mercado Livre na URL canônica do produto:
+   * segue encurtador e, se cair numa vitrine de afiliado (o caso de um link
+   * copiado de outro grupo), descobre qual produto está sendo divulgado.
+   * Devolve a URL original quando não dá — quem chama trata isso.
+   */
+  async resolveProductUrl(url: string): Promise<string> {
+    const resolved = await this.resolveShortLink(url)
+    if (!isAffiliateStorefrontUrl(resolved)) return resolved
+
+    try {
+      const { data } = await axios.get(resolved, {
+        timeout: 20000,
+        validateStatus: () => true,
+        headers: { 'User-Agent': DESKTOP_UA },
+      })
+      const productId = extractFeaturedProductId(String(data))
+      if (!productId) {
+        log.warn(`Vitrine de afiliado sem produto identificável: ${resolved.substring(0, 100)}`)
+        return resolved
+      }
+      const canonica = `https://www.mercadolivre.com.br/p/${productId}`
+      log.info(`Link de afiliado de terceiro resolvido para o produto ${productId}`)
+      return canonica
+    } catch (err) {
+      log.warn('Não consegui ler a vitrine de afiliado:', (err as Error).message)
+      return resolved
+    }
+  }
+
   private async resolveShortLink(url: string): Promise<string> {
     if (!isMercadoLivreShortLink(url)) return url
     try {
@@ -177,7 +233,7 @@ export class MercadoLivreApi {
    * não dá — quem chama cai de volta na raspagem.
    */
   async fetchProduct(url: string): Promise<Partial<Product> | null> {
-    const resolvedUrl = await this.resolveShortLink(url)
+    const resolvedUrl = await this.resolveProductUrl(url)
     const productId = extractCatalogProductId(resolvedUrl)
     // Anúncio individual (/MLB-...-_JM) não é atendido pela API com token de
     // aplicação; sai calado pra não poluir o log, já que a raspagem assume.

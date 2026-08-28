@@ -487,7 +487,13 @@ export class WhatsAppManager {
       }
 
       const scraped = await this.scraperManager.scrapeProduct(url)
-      const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(url, store)
+      // Gera o link a partir da URL que a captura resolveu, não da que veio no
+      // grupo. O que circula em grupo costuma ser o link de afiliado de OUTRA
+      // pessoa (meli.la/..., s.shopee.com.br/...), que aponta pra vitrine dela
+      // — usando essa URL, o app acabava divulgando o link do concorrente em
+      // vez de trocar pelo nosso.
+      const urlDoProduto = scraped.original_url || url
+      const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(urlDoProduto, store)
       const product = this.dbManager.createProduct({
         ...scraped,
         source: 'whatsapp',

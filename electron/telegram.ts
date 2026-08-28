@@ -262,11 +262,18 @@ export class TelegramManager {
       }
 
       const scraped = await this.scraperManager.scrapeProduct(url)
-      const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(url, store)
+      // Ver o comentário equivalente em whatsapp.ts: usa a URL que a captura
+      // resolveu, não a que veio no grupo — que costuma ser o link de afiliado
+      // de outra pessoa.
+      const urlDoProduto = scraped.original_url || url
+      const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(urlDoProduto, store)
       const product = this.dbManager.createProduct({
         ...scraped,
         source: 'telegram',
-        affiliateUrl: affiliateUrl || undefined,
+        // Era gravado como `affiliateUrl` (camelCase), nome que não existe na
+        // tabela — o objeto ia com `as any`, então nada reclamava e o link de
+        // afiliado simplesmente não era salvo em nenhuma captura do Telegram.
+        affiliate_url: affiliateUrl || undefined,
       } as any)
 
       if (!product) {
