@@ -9,6 +9,8 @@ import {
   Loader2,
   LogOut,
   AlertCircle,
+  ShoppingBag,
+  LogIn,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 
@@ -18,10 +20,12 @@ export default function Conexoes() {
     whatsappQrCode,
     setWhatsappQrCode,
     telegramStatus,
+    mercadoLivreStatus,
   } = useAppStore()
 
   const [phoneNumber, setPhoneNumber] = useState('')
   const [telegramCode, setTelegramCode] = useState('')
+  const [mlLoggingIn, setMlLoggingIn] = useState(false)
   // Os listeners de status/QR agora vivem em App.tsx (sempre montado); aqui
   // só resta refletir localmente quando o backend pede o código, pra poder
   // esconder o campo de novo assim que o usuário envia (mostra um spinner
@@ -56,6 +60,19 @@ export default function Conexoes() {
 
   const handleTelegramDisconnect = async () => {
     await window.electronAPI.telegramDisconnect()
+  }
+
+  const handleMercadoLivreLogin = async () => {
+    setMlLoggingIn(true)
+    try {
+      await window.electronAPI.mercadoLivreLogin()
+    } finally {
+      setMlLoggingIn(false)
+    }
+  }
+
+  const handleMercadoLivreLogout = async () => {
+    await window.electronAPI.mercadoLivreLogout()
   }
 
   return (
@@ -266,6 +283,80 @@ export default function Conexoes() {
               </div>
               <button
                 onClick={handleTelegramDisconnect}
+                className="w-full h-10 rounded-lg border border-red-500/30 text-red-400 text-sm font-medium hover:bg-red-500/10 transition-colors flex items-center justify-center gap-2"
+              >
+                <LogOut className="w-4 h-4" />
+                Desconectar
+              </button>
+            </div>
+          )}
+        </motion.div>
+
+        {/* Mercado Livre Card */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="ticket-card p-6"
+        >
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-md bg-amber-500/10 flex items-center justify-center">
+                <ShoppingBag className="w-6 h-6 text-amber-500" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">Mercado Livre</h3>
+                <p className="text-sm text-muted-foreground">Link de afiliado com vitrine</p>
+              </div>
+            </div>
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${
+              mercadoLivreStatus === 'connected' ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'
+            }`}>
+              <div className={`w-2 h-2 rounded-full ${
+                mercadoLivreStatus === 'connected' ? 'bg-amber-500 status-online' : 'bg-red-500'
+              }`} />
+              <span className="text-xs font-medium capitalize">{mercadoLivreStatus}</span>
+            </div>
+          </div>
+
+          {mercadoLivreStatus === 'disconnected' && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-lg bg-secondary/50">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm text-foreground font-medium">Como funciona?</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Conecte a conta do Mercado Livre para que os links saiam como meli.la/... com a sua vitrine,
+                      igual aos gerados pela Central de Afiliados. O login é feito na página oficial do Mercado
+                      Livre e o app nunca vê a sua senha. Sem conectar, os links continuam saindo no formato
+                      simples, com matt_tool e matt_word.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={handleMercadoLivreLogin}
+                disabled={mlLoggingIn}
+                className="w-full h-11 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {mlLoggingIn ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+                Conectar Mercado Livre
+              </button>
+            </div>
+          )}
+
+          {mercadoLivreStatus === 'connected' && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 p-4 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                <CheckCircle2 className="w-5 h-5 text-amber-400" />
+                <div>
+                  <p className="text-sm text-foreground font-medium">Conectado com sucesso</p>
+                  <p className="text-xs text-muted-foreground">Os links de afiliado sairão no formato meli.la com vitrine</p>
+                </div>
+              </div>
+              <button
+                onClick={handleMercadoLivreLogout}
                 className="w-full h-10 rounded-lg border border-red-500/30 text-red-400 text-sm font-medium hover:bg-red-500/10 transition-colors flex items-center justify-center gap-2"
               >
                 <LogOut className="w-4 h-4" />

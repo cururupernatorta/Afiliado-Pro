@@ -21,6 +21,11 @@ export interface ElectronAPI {
   telegramSendProducts: (groupIds: string[], productIds: number[], extra?: SendProductsExtra) => Promise<void>
   telegramSendCode: (code: string) => Promise<void>
 
+  mercadoLivreGetStatus: () => Promise<'connected' | 'disconnected'>
+  mercadoLivreLogin: () => Promise<'connected' | 'cancelled'>
+  mercadoLivreLogout: () => Promise<void>
+  onMercadoLivreStatus: (callback: (status: string) => void) => () => void
+
   productGetAll: () => Promise<any[]>
   productGetById: (id: number) => Promise<any>
   productCreate: (data: any) => Promise<any>
@@ -92,6 +97,15 @@ const api: ElectronAPI = {
   telegramToggleMonitor: (groupId, groupName, enabled) => ipcRenderer.invoke('telegram:toggleMonitor', groupId, groupName, enabled),
   telegramSendProducts: (groupIds, productIds, extra) => ipcRenderer.invoke('telegram:sendProducts', groupIds, productIds, extra),
   telegramSendCode: (code) => ipcRenderer.invoke('telegram:sendCode', code),
+
+  mercadoLivreGetStatus: () => ipcRenderer.invoke('mercadolivre:getStatus'),
+  mercadoLivreLogin: () => ipcRenderer.invoke('mercadolivre:login'),
+  mercadoLivreLogout: () => ipcRenderer.invoke('mercadolivre:logout'),
+  onMercadoLivreStatus: (callback) => {
+    const handler = (_: any, status: string) => callback(status)
+    ipcRenderer.on('mercadolivre:status', handler)
+    return () => ipcRenderer.removeListener('mercadolivre:status', handler)
+  },
 
   productGetAll: () => ipcRenderer.invoke('product:getAll'),
   productGetById: (id) => ipcRenderer.invoke('product:getById', id),

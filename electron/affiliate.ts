@@ -1,13 +1,16 @@
 import { DatabaseManager } from './database'
+import { MercadoLivreLinkGenerator } from './mercadoLivreLink'
 import axios from 'axios'
 import log from 'electron-log'
 import crypto from 'crypto'
 
 export class AffiliateManager {
   private dbManager: DatabaseManager
+  readonly mercadoLivreLink: MercadoLivreLinkGenerator
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager
+    this.mercadoLivreLink = new MercadoLivreLinkGenerator(dbManager)
   }
 
   async convertLink(originalUrl: string, store: string): Promise<string | null> {
@@ -15,7 +18,7 @@ export class AffiliateManager {
     try {
       switch (store) {
         case 'shopee': return await this.convertShopee(originalUrl, config)
-        case 'mercado_livre': return this.convertMercadoLivre(originalUrl, config)
+        case 'mercado_livre': return await this.convertMercadoLivre(originalUrl, config)
         case 'amazon': return await this.convertAmazon(originalUrl, config)
         case 'aliexpress': return await this.convertAliExpress(originalUrl, config)
         default: return null
@@ -90,11 +93,23 @@ export class AffiliateManager {
   // Gerador de Links/Central de Afiliados é quem gera esses links — por isso
   // aqui só remonta a URL do produto com os dois parâmetros da conta do
   // usuário, do mesmo jeito que os links gerados pela própria central ficam.
-  private convertMercadoLivre(url: string, config: any): string | null {
+  private async convertMercadoLivre(url: string, config: any): Promise<string | null> {
     if (!config.mercado_livre_matt_tool) {
       log.warn('matt_tool do Mercado Livre não configurado')
       return null
     }
+
+    // Primeiro o link com vitrine, gerado pelo mesmo endpoint que a Central de
+    // Afiliados usa (ver mercadoLivreLink.ts). Só sai se o usuário conectou a
+    // conta em Conexões; sem isso, ou se a geração falhar, cai no formato
+    // simples com matt_tool/matt_word, que continua sendo afiliado válido.
+    const vitrine = await this.mercadoLivreLink.generate(url, config.mercado_livre_matt_word)
+    if (vitrine?.shortUrl || vitrine?.longUrl) {
+      const link = vitrine.shortUrl || vitrine.longUrl!
+      log.info(`Link de afiliado do Mercado Livre gerado com vitrine: ${link}`)
+      return link
+    }
+
     try {
       const urlObj = new URL(url)
       urlObj.searchParams.set('matt_tool', config.mercado_livre_matt_tool)

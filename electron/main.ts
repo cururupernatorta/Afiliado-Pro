@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, session } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import path from 'path'
 import { DatabaseManager } from './database'
@@ -208,18 +208,16 @@ app.whenReady().then(async () => {
     dbManager = new DatabaseManager(dbPath)
     dbManager.on('log', (entry) => sendToRenderer('log:entry', entry))
 
-    // Uma versão anterior chegou a oferecer login do Mercado Livre dentro do
-    // app, e quem conectou ficou com a sessão gravada em disco. O recurso foi
-    // removido, então não existe mais tela pra desconectar — isso apaga a
-    // sessão que sobrou. Roda a cada início: é barato e garante que nenhum
-    // login antigo do Mercado Livre continue guardado.
-    session
-      .fromPartition('persist:mercadolivre-afiliados')
-      .clearStorageData()
-      .catch((err) => log.warn('Erro ao remover a sessão antiga do Mercado Livre:', err))
     queueManager = new QueueManager()
     queueManager.setDatabaseManager(dbManager)
     affiliateManager = new AffiliateManager(dbManager)
+    // Os cookies do Mercado Livre são de sessão e não sobrevivem em disco por
+    // conta própria — restaura os que foram guardados cifrados, senão o
+    // usuário teria que reconectar a cada vez que abre o app.
+    affiliateManager.mercadoLivreLink
+      .restoreSession()
+      .then((ok) => { if (ok) sendToRenderer('mercadolivre:status', 'connected') })
+      .catch((err) => log.warn('Erro ao restaurar sessão do Mercado Livre:', err))
     scraperManager = new ScraperManager(affiliateManager, dbManager)
     whatsappManager = new WhatsAppManager(dbManager, queueManager, scraperManager, userDataPath)
     telegramManager = new TelegramManager(dbManager, queueManager, scraperManager, userDataPath)
@@ -409,6 +407,10 @@ const setupIpcHandlers = (): void => {
     telegramManager.sendProducts(groupIds, productIds, extra)
   )
   ipcMain.handle('telegram:sendCode', (_, code: string) => telegramManager.sendCode(code))
+
+  ipcMain.handle('mercadolivre:getStatus', () => affiliateManager.mercadoLivreLink.getStatus())
+  ipcMain.handle('mercadolivre:login', () => affiliateManager.mercadoLivreLink.openLoginWindow())
+  ipcMain.handle('mercadolivre:logout', () => affiliateManager.mercadoLivreLink.logout())
 
   ipcMain.handle('product:getAll', () => dbManager.getAllProducts())
   ipcMain.handle('product:getById', (_, id: number) => dbManager.getProductById(id))
