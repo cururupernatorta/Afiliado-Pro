@@ -28,8 +28,12 @@ export const DEFAULT_TEMPLATE_TEXT =
 // desconto fake é o tipo de dado que o produto promete nunca fabricar.
 function buildPriceLine(price: number, originalPrice?: number): string {
   const hasRealDiscount = typeof originalPrice === 'number' && originalPrice > price
+  // Tachado no WhatsApp é ~assim~, com UM til. Com dois (~~assim~~, que é a
+  // sintaxe do Markdown) o WhatsApp usa o primeiro e o último como
+  // delimitadores e mostra os tis restantes no meio do texto — o preço saía
+  // riscado mas com um "~" grudado de cada lado.
   return hasRealDiscount
-    ? `De ~~R$ ${originalPrice!.toFixed(2)}~~ por *R$ ${price.toFixed(2)}*`
+    ? `De ~R$ ${originalPrice!.toFixed(2)}~ por *R$ ${price.toFixed(2)}*`
     : `*R$ ${price.toFixed(2)}*`
 }
 

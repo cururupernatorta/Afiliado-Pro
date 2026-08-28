@@ -24,7 +24,7 @@ const PLACEHOLDERS = [
 
 const SAMPLE = {
   title: 'Fone de Ouvido Bluetooth Sem Fio',
-  price_line: 'De ~~R$ 149,90~~ por *R$ 89,90*',
+  price_line: 'De ~R$ 149,90~ por *R$ 89,90*',
   price: '89.90',
   original_price: '149.90',
   affiliate_url: 'https://exemplo.com/produto?tag=seu-id',
