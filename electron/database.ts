@@ -400,7 +400,12 @@ export class DatabaseManager extends EventEmitter {
       log.warn(`Produto ignorado - URL já existe no banco: ${product.original_url}`)
       this.addLog({
         type: 'warning',
-        platform: product.source as any,
+        // `source` inclui 'manual', que NÃO é um valor aceito na coluna
+        // platform da tabela de logs ('whatsapp','telegram','system'). Passar
+        // ele direto fazia o CHECK do SQLite derrubar a operação inteira, e o
+        // usuário via um erro de banco ao tentar cadastrar um produto que já
+        // existia — em vez de um aviso de duplicado.
+        platform: product.source === 'whatsapp' || product.source === 'telegram' ? product.source : 'system',
         message: 'Produto duplicado ignorado',
         details: `URL já capturada anteriormente: ${product.original_url}`,
       })

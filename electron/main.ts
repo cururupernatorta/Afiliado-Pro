@@ -416,8 +416,14 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('product:getById', (_, id: number) => dbManager.getProductById(id))
   ipcMain.handle('product:create', async (_, data) => {
     const product = dbManager.createProduct(data)
+    // createProduct devolve null quando a URL já está no banco. Sem avisar, a
+    // tela ficava sem resposta e parecia que o cadastro tinha falhado sem
+    // motivo — melhor dizer que é duplicado.
+    if (!product) {
+      throw new Error('Este produto já foi cadastrado antes (mesma URL). Ele já está na sua lista de Produtos.')
+    }
     // Tentar converter para link de afiliado automaticamente
-    if (product && product.original_url && !product.affiliate_url) {
+    if (product.original_url && !product.affiliate_url) {
       try {
         const store = affiliateManager.detectStore(product.original_url)
         if (store) {
