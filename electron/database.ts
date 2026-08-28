@@ -272,26 +272,61 @@ export class DatabaseManager extends EventEmitter {
       log.error('Erro na migração mercado_livre_matt_tool/matt_word:', err)
     }
 
-    // Migração: garante o índice único de ad_templates(platform, group_id).
-    // Bancos criados por versões antigas do app podem não ter esse índice, e
-    // sem ele a associação de template a grupo falhava calada (ver comentário
-    // em assignAdTemplate). Remove duplicatas antes, senão a criação do índice
-    // falha — mantém a linha mais recente de cada grupo.
+    // Migração: normaliza a tabela ad_templates de bancos antigos.
+    //
+    // Duas heranças quebravam a associação de template a grupo, e as duas
+    // apareceram só em banco de usuário (o schema novo já nasce correto):
+    //  - template_text criada como NOT NULL: associar um template da
+    //    biblioteca grava esse campo como NULL (o texto passa a vir do
+    //    template), e o SQLite recusava com "NOT NULL constraint failed".
+    //  - falta do índice único (platform, group_id), sem o qual um INSERT com
+    //    ON CONFLICT nessa dupla é recusado por inteiro.
+    //
+    // Coluna NOT NULL não se altera no SQLite sem reconstruir a tabela, então
+    // é o que se faz aqui, copiando os dados por nome de coluna (a ordem varia
+    // entre bancos, já que template_id foi acrescentada depois).
     try {
-      const idx = this.db.prepare("PRAGMA index_list(ad_templates)").all() as any[]
-      const hasUnique = idx.some((i) => i.unique === 1)
-      if (!hasUnique) {
+      const cols = this.db.prepare('PRAGMA table_info(ad_templates)').all() as any[]
+      const textCol = cols.find((c) => c.name === 'template_text')
+      const idx = this.db.prepare('PRAGMA index_list(ad_templates)').all() as any[]
+      const precisaReconstruir = !!textCol && textCol.notnull === 1
+      const semIndiceUnico = !idx.some((i) => i.unique === 1)
+
+      if (precisaReconstruir) {
+        this.db.exec('PRAGMA foreign_keys = OFF')
+        this.db.exec(`
+          CREATE TABLE ad_templates_migracao (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL CHECK(platform IN ('whatsapp', 'telegram')),
+            group_id TEXT NOT NULL,
+            template_id INTEGER REFERENCES message_templates(id) ON DELETE SET NULL,
+            template_text TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(platform, group_id)
+          );
+          INSERT INTO ad_templates_migracao (id, platform, group_id, template_id, template_text, created_at, updated_at)
+            SELECT id, platform, group_id,
+                   ${cols.some((c) => c.name === 'template_id') ? 'template_id' : 'NULL'},
+                   NULLIF(template_text, ''), created_at, updated_at
+              FROM ad_templates
+             WHERE id IN (SELECT MAX(id) FROM ad_templates GROUP BY platform, group_id);
+          DROP TABLE ad_templates;
+          ALTER TABLE ad_templates_migracao RENAME TO ad_templates;
+          CREATE INDEX IF NOT EXISTS idx_templates_platform ON ad_templates(platform);
+        `)
+        this.db.exec('PRAGMA foreign_keys = ON')
+        log.info('Migração: ad_templates reconstruída (template_text deixou de ser NOT NULL)')
+      } else if (semIndiceUnico) {
         this.db.exec(`
           DELETE FROM ad_templates
-           WHERE id NOT IN (
-             SELECT MAX(id) FROM ad_templates GROUP BY platform, group_id
-           )
+           WHERE id NOT IN (SELECT MAX(id) FROM ad_templates GROUP BY platform, group_id)
         `)
         this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_templates_group ON ad_templates(platform, group_id)')
         log.info('Migração: índice único criado em ad_templates(platform, group_id)')
       }
     } catch (err) {
-      log.error('Erro na migração do índice único de ad_templates:', err)
+      log.error('Erro na migração da tabela ad_templates:', err)
     }
 
     // Migração: credenciais da API oficial do Mercado Livre. A raspagem da
@@ -525,9 +560,12 @@ export class DatabaseManager extends EventEmitter {
   // biblioteca (template_id), usa o texto de lá; senão cai no template_text legado
   // (grupos configurados antes da biblioteca existir).
   getAdTemplate(platform: string, groupId: string): AdTemplate | undefined {
+    // NULLIF nos dois lados: texto vazio tem que valer como "sem template",
+    // senão o envio formataria a mensagem com uma string vazia em vez de cair
+    // no template padrão — o anúncio sairia em branco.
     return this.db.prepare(`
       SELECT at.id, at.platform, at.group_id, at.template_id,
-             COALESCE(mt.template_text, at.template_text) as template_text
+             COALESCE(NULLIF(mt.template_text, ''), NULLIF(at.template_text, '')) as template_text
       FROM ad_templates at
       LEFT JOIN message_templates mt ON mt.id = at.template_id
       WHERE at.platform = ? AND at.group_id = ?
