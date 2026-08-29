@@ -66,6 +66,47 @@ export function extractFeaturedProductId(html: string): string | null {
   return null
 }
 
+/**
+ * Segue encurtador e, caindo numa vitrine de afiliado, descobre o produto
+ * divulgado — devolvendo a URL canônica. Função solta (não precisa de token
+ * nem de banco) porque tanto a leitura de dados quanto a geração do link de
+ * afiliado precisam disso: usar a URL crua fazia o app republicar o link do
+ * concorrente. Devolve a URL de entrada quando não consegue resolver.
+ */
+export async function resolveMercadoLivreProductUrl(url: string): Promise<string> {
+  let atual = url
+  try {
+    if (isMercadoLivreShortLink(atual)) {
+      const response = await axios.get(atual, {
+        maxRedirects: 10,
+        timeout: 15000,
+        validateStatus: () => true,
+        headers: { 'User-Agent': DESKTOP_UA },
+      })
+      const finalUrl = response.request?.res?.responseUrl || response.request?.responseURL
+      if (typeof finalUrl === 'string' && finalUrl) atual = finalUrl
+    }
+
+    if (!isAffiliateStorefrontUrl(atual)) return atual
+
+    const { data } = await axios.get(atual, {
+      timeout: 20000,
+      validateStatus: () => true,
+      headers: { 'User-Agent': DESKTOP_UA },
+    })
+    const productId = extractFeaturedProductId(String(data))
+    if (!productId) {
+      log.warn(`Vitrine de afiliado sem produto identificável: ${atual.substring(0, 100)}`)
+      return atual
+    }
+    log.info(`Link de afiliado de terceiro resolvido para o produto ${productId}`)
+    return `https://www.mercadolivre.com.br/p/${productId}`
+  } catch (err) {
+    log.warn('Não consegui resolver o link do Mercado Livre:', (err as Error).message)
+    return atual
+  }
+}
+
 export class MercadoLivreApi {
   private dbManager: DatabaseManager
   private token: { value: string; expiresAt: number } | null = null
@@ -133,67 +174,6 @@ export class MercadoLivreApi {
   }
 
   /**
-   * Segue o redirecionamento de um link encurtado pra chegar na URL real do
-   * produto. Isso importa porque o que circula em grupo de ofertas é quase
-   * sempre link curto, e sem resolver o ID do produto nem aparece — a captura
-   * caía direto na raspagem, que o Mercado Livre bloqueia. O redirecionamento
-   * em si é respondido normalmente; é a página de produto que vem barrada.
-   */
-  /**
-   * Transforma qualquer link do Mercado Livre na URL canônica do produto:
-   * segue encurtador e, se cair numa vitrine de afiliado (o caso de um link
-   * copiado de outro grupo), descobre qual produto está sendo divulgado.
-   * Devolve a URL original quando não dá — quem chama trata isso.
-   */
-  async resolveProductUrl(url: string): Promise<string> {
-    const resolved = await this.resolveShortLink(url)
-    if (!isAffiliateStorefrontUrl(resolved)) return resolved
-
-    try {
-      const { data } = await axios.get(resolved, {
-        timeout: 20000,
-        validateStatus: () => true,
-        headers: { 'User-Agent': DESKTOP_UA },
-      })
-      const productId = extractFeaturedProductId(String(data))
-      if (!productId) {
-        log.warn(`Vitrine de afiliado sem produto identificável: ${resolved.substring(0, 100)}`)
-        return resolved
-      }
-      const canonica = `https://www.mercadolivre.com.br/p/${productId}`
-      log.info(`Link de afiliado de terceiro resolvido para o produto ${productId}`)
-      return canonica
-    } catch (err) {
-      log.warn('Não consegui ler a vitrine de afiliado:', (err as Error).message)
-      return resolved
-    }
-  }
-
-  private async resolveShortLink(url: string): Promise<string> {
-    if (!isMercadoLivreShortLink(url)) return url
-    try {
-      const response = await axios.get(url, {
-        maxRedirects: 10,
-        timeout: 15000,
-        validateStatus: () => true,
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
-        },
-      })
-      const finalUrl = response.request?.res?.responseUrl || response.request?.responseURL
-      if (typeof finalUrl === 'string' && finalUrl) {
-        log.info(`Link curto do Mercado Livre resolvido: ${finalUrl.substring(0, 120)}`)
-        return finalUrl
-      }
-      return url
-    } catch (err) {
-      log.warn('Não consegui resolver o link curto do Mercado Livre:', (err as Error).message)
-      return url
-    }
-  }
-
-  /**
    * Descobre a categoria do Mercado Livre correspondente a uma palavra-chave,
    * usando o preditor de categorias deles. Serve pra pedir a página de ofertas
    * filtrada por categoria (`/ofertas?category=...`), que traz produtos do
@@ -233,7 +213,7 @@ export class MercadoLivreApi {
    * não dá — quem chama cai de volta na raspagem.
    */
   async fetchProduct(url: string): Promise<Partial<Product> | null> {
-    const resolvedUrl = await this.resolveProductUrl(url)
+    const resolvedUrl = await resolveMercadoLivreProductUrl(url)
     const productId = extractCatalogProductId(resolvedUrl)
     // Anúncio individual (/MLB-...-_JM) não é atendido pela API com token de
     // aplicação; sai calado pra não poluir o log, já que a raspagem assume.
@@ -280,7 +260,13 @@ export class MercadoLivreApi {
         original_price: hasRealDiscount ? originalPrice : undefined,
         image_url: imageUrl,
         description: '',
-        original_url: url,
+        // A URL canônica do produto, NÃO a que chegou. Quando a captura vem de
+        // um grupo, `url` é o link de afiliado de outra pessoa (meli.la/...);
+        // devolver ele aqui fazia o produto ser salvo apontando pro
+        // concorrente, e a geração do link de afiliado receber esse mesmo
+        // endereço de volta — o app colava matt_tool/matt_word no link alheio,
+        // o que não muda a atribuição em nada.
+        original_url: resolvedUrl,
         store: 'mercado_livre',
         source: 'manual',
       } as Partial<Product>

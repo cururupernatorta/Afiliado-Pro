@@ -1,5 +1,6 @@
 import { DatabaseManager } from './database'
 import { MercadoLivreLinkGenerator } from './mercadoLivreLink'
+import { resolveMercadoLivreProductUrl } from './mercadoLivreApi'
 import axios from 'axios'
 import log from 'electron-log'
 import crypto from 'crypto'
@@ -93,11 +94,18 @@ export class AffiliateManager {
   // Gerador de Links/Central de Afiliados é quem gera esses links — por isso
   // aqui só remonta a URL do produto com os dois parâmetros da conta do
   // usuário, do mesmo jeito que os links gerados pela própria central ficam.
-  private async convertMercadoLivre(url: string, config: any): Promise<string | null> {
+  private async convertMercadoLivre(rawUrl: string, config: any): Promise<string | null> {
     if (!config.mercado_livre_matt_tool) {
       log.warn('matt_tool do Mercado Livre não configurado')
       return null
     }
+
+    // Resolve antes de qualquer coisa. Link capturado de grupo costuma ser o
+    // de afiliado de outra pessoa (meli.la/...), que aponta pra vitrine dela:
+    // gerar em cima dele produzia um link do concorrente, e o formato simples
+    // apenas colava matt_tool/matt_word na URL alheia — o que não muda a
+    // atribuição, só publica o link dele com o nosso parâmetro pendurado.
+    const url = await resolveMercadoLivreProductUrl(rawUrl)
 
     // Primeiro o link com vitrine, gerado pelo mesmo endpoint que a Central de
     // Afiliados usa (ver mercadoLivreLink.ts). Só sai se o usuário conectou a
