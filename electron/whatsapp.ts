@@ -20,7 +20,11 @@ export class WhatsAppManager {
   private status: 'disconnected' | 'connecting' | 'connected' = 'disconnected'
   private authPath: string
   private reconnectAttempts: number = 0
-  private maxReconnectAttempts: number = 5
+  // Teto da espera entre tentativas. Não existe mais limite de tentativas: o
+  // app precisa se recuperar sozinho de uma queda de qualquer duração, já que
+  // fica aberto o dia todo monitorando grupos.
+  private readonly MAX_RECONNECT_DELAY_MS = 5 * 60 * 1000
+  private reconnectTimer: NodeJS.Timeout | null = null
 
   // Mensagens que o WhatsApp entrega na sincronização de histórico, guardadas
   // por grupo/canal. Servem pra duas recuperações: (1) o que passou enquanto o
@@ -47,7 +51,9 @@ export class WhatsAppManager {
     if (this.status === 'connected' || this.status === 'connecting') return
 
     this.status = 'connecting'
-    this.reconnectAttempts = 0
+    // O contador NÃO é zerado aqui: cada tentativa de reconexão passa por este
+    // método, e zerar no início deixaria a espera progressiva presa nos 5
+    // segundos iniciais pra sempre. Só uma conexão de fato aberta zera.
     sendToRenderer('whatsapp:status', 'connecting')
 
     try {
@@ -86,7 +92,7 @@ export class WhatsAppManager {
             message: isLoggedOut
               ? 'WhatsApp desconectado — sessão invalidada, será necessário escanear o QR Code novamente'
               : 'WhatsApp desconectado — tentando reconectar automaticamente',
-            details: `statusCode=${statusCode ?? 'desconhecido'}, tentativa=${this.reconnectAttempts}/${this.maxReconnectAttempts}`,
+            details: `statusCode=${statusCode ?? 'desconhecido'}, tentativas seguidas=${this.reconnectAttempts}`,
           })
 
           this.status = 'disconnected'
@@ -101,18 +107,39 @@ export class WhatsAppManager {
             this.clearAuthState()
           }
 
-          if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
+          if (shouldReconnect) {
+            // Antes eram 5 tentativas de 5 em 5 segundos e depois o app
+            // desistia PARA SEMPRE — 25 segundos de tolerância. Qualquer queda
+            // de rede mais longa que isso matava a captura pelo resto do dia,
+            // com o app aberto e sem nada indicando o problema (relato real:
+            // parou às 19h e nunca mais voltou sozinho).
+            //
+            // Agora tenta indefinidamente, com espera progressiva até 5
+            // minutos: reconecta rápido numa oscilação curta, sem martelar o
+            // WhatsApp quando a queda é longa.
             this.reconnectAttempts++
-            log.info(`Tentativa de reconexão ${this.reconnectAttempts}/${this.maxReconnectAttempts}`)
-            setTimeout(() => this.connect(), 5000)
-          } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            log.error('Máximo de tentativas de reconexão atingido')
-            sendToRenderer('whatsapp:status', 'error')
+            const espera = Math.min(5000 * 2 ** (this.reconnectAttempts - 1), this.MAX_RECONNECT_DELAY_MS)
+            log.info(`Tentativa de reconexão ${this.reconnectAttempts} em ${Math.round(espera / 1000)}s`)
+
+            // Avisa uma vez quando a coisa deixa de ser uma oscilação passageira,
+            // pra não descobrir horas depois que nada estava sendo capturado.
+            if (this.reconnectAttempts === 5) {
+              this.dbManager.addLog({
+                type: 'warning',
+                platform: 'whatsapp',
+                message: 'WhatsApp fora do ar há alguns minutos — nada está sendo capturado dos grupos',
+                details: 'O app continua tentando reconectar sozinho. Se persistir, verifique a conexão ou reconecte em Conexões.',
+              })
+            }
+
+            if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+            this.reconnectTimer = setTimeout(() => this.connect(), espera)
           }
         } else if (connection === 'open') {
           this.status = 'connected'
           this.qrCode = null
           this.reconnectAttempts = 0
+          if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
           sendToRenderer('whatsapp:status', 'connected')
           log.info('WhatsApp conectado')
           this.startMonitoring()
@@ -156,6 +183,10 @@ export class WhatsAppManager {
   }
 
   async disconnect(): Promise<void> {
+    // Cancela qualquer reconexão agendada: desconectar de propósito não pode
+    // ser desfeito por um timer que já estava correndo.
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
+    this.reconnectAttempts = 0
     if (this.sock) {
       try {
         await this.sock.logout()
@@ -178,6 +209,7 @@ export class WhatsAppManager {
   // usuário a escanear o QR Code de novo toda vez que uma atualização reiniciava
   // o programa.
   closeConnection(): void {
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.sock) {
       try {
         this.sock.end(undefined)

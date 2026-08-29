@@ -12,11 +12,32 @@ export interface ProductLike {
   store: string
   description?: string
   image_path?: string
+  pix_price?: number
+  coupon_url?: string
 }
 
 export interface FormatMessageExtra {
   groupLink?: string
   coupon?: string
+  /** Link de cupom já convertido em afiliado (ver ensureCouponUrl em main.ts). */
+  couponUrl?: string
+}
+
+/**
+ * Decide se um produto combina com o nicho de um grupo de destino.
+ *
+ * Grupo sem nicho definido recebe tudo — é como o app se comportava antes
+ * deste campo existir, e continua sendo o padrão pra quem tem um grupo só.
+ * Com nicho preenchido, o produto precisa casar com alguma das palavras.
+ */
+export function matchesGroupNiche(title: string, niche?: string | null): boolean {
+  const keywords = (niche ?? '')
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean)
+  if (keywords.length === 0) return true
+  const lower = title.toLowerCase()
+  return keywords.some((k) => lower.includes(k))
 }
 
 // Usado sempre que um grupo/envio não tem nenhum template da biblioteca associado.
@@ -39,11 +60,19 @@ function buildPriceLine(price: number, originalPrice?: number): string {
 
 export function formatMessage(product: ProductLike, templateText: string, extra: FormatMessageExtra = {}): string {
   const hasRealDiscount = typeof product.original_price === 'number' && product.original_price > product.price
+  // Preço no Pix só entra se for realmente menor que o normal — anunciar "no
+  // Pix" um valor igual ou maior seria enganoso.
+  const pix = typeof product.pix_price === 'number' && product.pix_price > 0 && product.pix_price < product.price
+    ? product.pix_price
+    : undefined
 
   return templateText
     .replace(/{title}/g, product.title)
     .replace(/{price}/g, product.price.toFixed(2))
     .replace(/{original_price}/g, hasRealDiscount ? product.original_price!.toFixed(2) : '')
+    .replace(/{pix_price}/g, pix ? pix.toFixed(2) : '')
+    .replace(/{pix_line}/g, pix ? `💸 *R$ ${pix.toFixed(2)}* no Pix` : '')
+    .replace(/{coupon_url}/g, extra.couponUrl || product.coupon_url || '')
     .replace(/{price_line}/g, buildPriceLine(product.price, product.original_price))
     .replace(/{affiliate_url}/g, product.affiliate_url || product.original_url)
     .replace(/{original_url}/g, product.original_url)
@@ -63,10 +92,23 @@ export async function autoRepostProduct(
     const config = dbManager.getConfig()
     if (!config.auto_repost_enabled) return
 
-    const targets = dbManager.getEnabledAutoSendTargets(sourcePlatform)
-    if (targets.length === 0) return
+    const todosOsGrupos = dbManager.getEnabledAutoSendTargets(sourcePlatform)
+    if (todosOsGrupos.length === 0) return
 
-    log.info(`Auto-repost: enviando produto "${product.title}" para ${targets.length} grupo(s) ${sourcePlatform}`)
+    // Cada grupo de destino pode ter nicho próprio. Antes, todo produto ia
+    // para todos os grupos — quem tinha grupos de assuntos diferentes recebia
+    // tudo em todos. Grupo sem nicho continua recebendo tudo.
+    const targets = todosOsGrupos.filter((t) => matchesGroupNiche(product.title, t.niche))
+    if (targets.length === 0) {
+      log.info(`Auto-repost: "${product.title}" não combina com o nicho de nenhum grupo de destino`)
+      return
+    }
+
+    const ignorados = todosOsGrupos.length - targets.length
+    log.info(
+      `Auto-repost: enviando produto "${product.title}" para ${targets.length} grupo(s) ${sourcePlatform}` +
+        (ignorados > 0 ? ` (${ignorados} fora do nicho)` : '')
+    )
 
     let delay = 0
     for (const target of targets) {

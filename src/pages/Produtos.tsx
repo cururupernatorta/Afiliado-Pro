@@ -74,6 +74,8 @@ export default function Produtos() {
   const [editOriginalPrice, setEditOriginalPrice] = useState('')
   const [editDesc, setEditDesc]           = useState('')
   const [editCoupon, setEditCoupon]       = useState('')
+  const [editPixPrice, setEditPixPrice]   = useState('')
+  const [editCouponUrl, setEditCouponUrl] = useState('')
   const [editImageUrl, setEditImageUrl]   = useState('')
   const [imageFile, setImageFile]         = useState<File | null>(null)
   const [imagePreview, setImagePreview]   = useState<string>('')
@@ -117,6 +119,8 @@ export default function Produtos() {
       setEditOriginalPrice(String(data.original_price ?? ''))
       setEditDesc(data.description ?? '')
       setEditCoupon('')
+      setEditPixPrice('')
+      setEditCouponUrl('')
       setEditImageUrl(data.image_url ?? '')
       setImageFile(null)
       setImagePreview(data.image_url ?? '')
@@ -144,6 +148,8 @@ export default function Produtos() {
         title:          editTitle,
         price:          parseFloat(editPrice),
         original_price: editOriginalPrice ? parseFloat(editOriginalPrice) : undefined,
+        pix_price:      editPixPrice ? parseFloat(editPixPrice) : undefined,
+        coupon_url:     editCouponUrl.trim() || undefined,
         description:    editDesc,
         image_url:      imageFile ? imagePreview : editImageUrl,
         source:         'manual',
@@ -166,6 +172,8 @@ export default function Produtos() {
     setEditOriginalPrice('')
     setEditDesc('')
     setEditCoupon('')
+    setEditPixPrice('')
+    setEditCouponUrl('')
     setEditImageUrl('')
     setImageFile(null)
     setImagePreview('')
@@ -606,6 +614,36 @@ export default function Produtos() {
                           className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                         />
                       </div>
+                    </div>
+
+                    {/* Preço no Pix — informado à mão: nenhuma loja expõe isso por API */}
+                    <div>
+                      <label className="text-sm text-muted-foreground mb-1 block">Preço no Pix (R$)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={editPixPrice}
+                        onChange={(e) => setEditPixPrice(e.target.value)}
+                        placeholder="Opcional — só aparece no anúncio se for menor que o preço atual"
+                        className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      />
+                    </div>
+
+                    {/* Link da página de cupons — vira link de afiliado no envio */}
+                    <div>
+                      <label className="text-sm text-muted-foreground mb-1 block flex items-center gap-1">
+                        <Link2 className="w-3.5 h-3.5" /> Link da página de cupons
+                      </label>
+                      <input
+                        type="text"
+                        value={editCouponUrl}
+                        onChange={(e) => setEditCouponUrl(e.target.value)}
+                        placeholder="Opcional — cole a URL da página de cupons da loja"
+                        className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Vira link de afiliado seu no envio. Use <code>{'{coupon_url}'}</code> no template.
+                      </p>
                     </div>
 
                     {/* Cupom */}

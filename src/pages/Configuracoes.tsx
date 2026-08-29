@@ -285,6 +285,25 @@ export default function Configuracoes() {
     }
   }
 
+  // Grava o nicho do grupo. Sai do input só quando o campo perde o foco, pra
+  // não bater no banco a cada tecla digitada.
+  const saveTargetNiche = async (target: any, niche: string) => {
+    if ((target.niche || '') === niche) return
+    try {
+      await window.electronAPI.autoSendSaveTarget({
+        platform: target.platform,
+        group_id: target.group_id,
+        group_name: target.group_name,
+        enabled: target.enabled,
+        niche: niche || null,
+      })
+      await loadAutoSendTargets()
+    } catch (error) {
+      console.error('Erro ao salvar nicho do grupo:', error)
+      alert('Não consegui salvar o nicho deste grupo: ' + ((error as Error).message || 'erro desconhecido'))
+    }
+  }
+
   const assignTemplate = async (platform: string, groupId: string, templateId: number | null) => {
     try {
       await window.electronAPI.adTemplateAssign(platform, groupId, templateId)
@@ -685,6 +704,17 @@ export default function Configuracoes() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
+                            <Tag className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                            <input
+                              type="text"
+                              defaultValue={target.niche || ''}
+                              onBlur={(e) => saveTargetNiche(target, e.target.value.trim())}
+                              placeholder="Nicho deste grupo (vazio = recebe tudo)"
+                              title="Palavras-chave separadas por vírgula. Só chegam neste grupo os produtos cujo título contenha alguma delas."
+                              className="flex-1 h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
                             <FileText className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
                             <select
                               value={template?.template_id ?? ''}
@@ -742,6 +772,17 @@ export default function Configuracoes() {
                                 <Trash2 className="w-4 h-4 text-red-400" />
                               </button>
                             </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Tag className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                            <input
+                              type="text"
+                              defaultValue={target.niche || ''}
+                              onBlur={(e) => saveTargetNiche(target, e.target.value.trim())}
+                              placeholder="Nicho deste grupo (vazio = recebe tudo)"
+                              title="Palavras-chave separadas por vírgula. Só chegam neste grupo os produtos cujo título contenha alguma delas."
+                              className="flex-1 h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            />
                           </div>
                           <div className="flex items-center gap-2">
                             <FileText className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />

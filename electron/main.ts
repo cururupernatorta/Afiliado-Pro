@@ -77,6 +77,26 @@ async function ensureAffiliateUrl(product: { id?: number; affiliate_url?: string
   return product.original_url
 }
 
+// A página de cupons é colada à mão pelo usuário (nenhuma loja expõe cupom por
+// API — confirmado na documentação da Shopee e do Mercado Livre). Aqui ela vira
+// um link de afiliado próprio, do mesmo jeito que o link do produto: é assim
+// que os grupos concorrentes publicam o "resgate o cupom aqui" e ainda assim
+// recebem comissão. Se a conversão falhar, publica a URL original — que leva
+// pro cupom certo, só sem atribuição.
+async function ensureCouponUrl(product: { coupon_url?: string }): Promise<string | undefined> {
+  if (!product.coupon_url) return undefined
+  try {
+    const store = affiliateManager.detectStore(product.coupon_url)
+    if (store) {
+      const link = await affiliateManager.convertLink(product.coupon_url, store)
+      if (link) return link
+    }
+  } catch (err) {
+    log.warn('Erro ao gerar link de afiliado para a página de cupons:', err)
+  }
+  return product.coupon_url
+}
+
 // ==================== AUTO UPDATE ====================
 function setupAutoUpdater(): void {
   if (isDev) {
@@ -280,6 +300,7 @@ app.whenReady().then(async () => {
         const message = formatMessage(effectiveProduct, templateText, {
           groupLink: config.group_link,
           coupon: job.data.overrideCoupon,
+          couponUrl: await ensureCouponUrl(product),
         })
 
         const imagePath = job.data.overrideImagePath || product.image_path || product.image_url
@@ -307,7 +328,19 @@ app.whenReady().then(async () => {
     const startAutoScrape = async () => {
       try {
         const cfg = dbManager.getConfig()
-        if (!cfg.auto_scrape_enabled || !cfg.niche) return
+        if (!cfg.auto_scrape_enabled) return
+
+        // A busca procura a união do nicho geral com o nicho de cada grupo de
+        // destino. Sem isso, quem define nichos diferentes por grupo só
+        // receberia ofertas do nicho global — os grupos ficariam brigando pelo
+        // mesmo acervo, e os de assunto próprio nunca teriam o que postar.
+        // A separação de qual oferta vai pra qual grupo acontece no envio.
+        const nichosDosGrupos = dbManager
+          .getEnabledAutoSendTargets()
+          .map((t) => t.niche || '')
+          .filter(Boolean)
+        const nicho = [...new Set([cfg.niche || '', ...nichosDosGrupos].join(',').split(',').map((k) => k.trim()).filter(Boolean))].join(', ')
+        if (!nicho) return
 
         // A busca de cada loja só faz sentido se der pra gerar link de afiliado
         // dela depois — sem credencial, o produto capturado ficaria com o link
@@ -324,7 +357,7 @@ app.whenReady().then(async () => {
         const stores = ['amazon', 'mercado_livre', 'shopee', 'aliexpress']
         for (const store of stores) {
           if (!storeHasCredentials[store]) continue
-          const deals = await scraperManager.searchDeals(cfg.niche, store)
+          const deals = await scraperManager.searchDeals(nicho, store)
           for (const deal of deals) {
             if (!dbManager.productExistsByUrl(deal.original_url!)) {
               const created = dbManager.createProduct(deal as any)

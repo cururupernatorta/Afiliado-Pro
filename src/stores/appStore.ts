@@ -30,6 +30,8 @@ export interface AutoSendTarget {
   group_id: string
   group_name: string
   enabled: boolean
+  /** Palavras-chave do grupo; vazio significa que ele recebe tudo. */
+  niche?: string
 }
 
 export interface AdTemplate {

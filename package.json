@@ -1,6 +1,6 @@
 {
   "name": "afiliado-pro",
-  "version": "1.6.5",
+  "version": "1.7.0",
   "description": "Bot de automacao para afiliados - WhatsApp, Telegram, Scraping e Links de Afiliado",
   "main": "dist-electron/main/main.js",
   "author": "Afiliado Pro",

@@ -14,6 +14,10 @@ export interface Product {
   description?: string
   original_url: string
   affiliate_url?: string
+  /** Preço no Pix, informado à mão — nenhuma loja expõe isso por API. */
+  pix_price?: number
+  /** Página de cupom da loja; vira link de afiliado na hora do envio. */
+  coupon_url?: string
   store: 'shopee' | 'mercado_livre' | 'amazon' | 'aliexpress'
   source: 'manual' | 'whatsapp' | 'telegram'
   created_at?: string
@@ -68,6 +72,11 @@ export interface AutoSendTarget {
   group_id: string
   group_name: string
   enabled: boolean
+  /**
+   * Palavras-chave do grupo, separadas por vírgula. Vazio significa "recebe
+   * tudo" — que é como todo grupo se comportava antes deste campo existir.
+   */
+  niche?: string
   created_at?: string
 }
 
@@ -124,6 +133,8 @@ export class DatabaseManager extends EventEmitter {
         description TEXT,
         original_url TEXT NOT NULL UNIQUE,
         affiliate_url TEXT,
+        pix_price REAL,
+        coupon_url TEXT,
         store TEXT NOT NULL CHECK(store IN ('shopee', 'mercado_livre', 'amazon', 'aliexpress')),
         source TEXT NOT NULL CHECK(source IN ('manual', 'whatsapp', 'telegram')),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -182,6 +193,7 @@ export class DatabaseManager extends EventEmitter {
         group_id TEXT NOT NULL,
         group_name TEXT NOT NULL,
         enabled INTEGER DEFAULT 1,
+        niche TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(platform, group_id)
       );
@@ -329,6 +341,33 @@ export class DatabaseManager extends EventEmitter {
       log.error('Erro na migração da tabela ad_templates:', err)
     }
 
+    // Migração: preço no Pix e link de cupom por produto. Nenhuma das lojas
+    // expõe esses dados por API (confirmado na documentação da Shopee e do
+    // Mercado Livre), então são informados à mão por quem monta o anúncio.
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(products)').all() as any[]
+      if (!columns.some((c) => c.name === 'pix_price')) {
+        this.db.exec('ALTER TABLE products ADD COLUMN pix_price REAL')
+        this.db.exec('ALTER TABLE products ADD COLUMN coupon_url TEXT')
+        log.info('Migração: colunas pix_price/coupon_url adicionadas à tabela products')
+      }
+    } catch (err) {
+      log.error('Erro na migração de pix_price/coupon_url:', err)
+    }
+
+    // Migração: nicho por grupo de destino. Antes existia um nicho único e
+    // global, e todo produto capturado ia pra todos os grupos — quem tem
+    // grupos de assuntos diferentes recebia tudo em todos.
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(auto_send_targets)').all() as any[]
+      if (!columns.some((c) => c.name === 'niche')) {
+        this.db.exec('ALTER TABLE auto_send_targets ADD COLUMN niche TEXT')
+        log.info('Migração: coluna niche adicionada à tabela auto_send_targets')
+      }
+    } catch (err) {
+      log.error('Erro na migração do nicho por grupo:', err)
+    }
+
     // Migração: credenciais da API oficial do Mercado Livre. A raspagem da
     // página do produto passou a ser barrada por uma página de verificação de
     // tráfego; a API não sofre isso.
@@ -413,8 +452,8 @@ export class DatabaseManager extends EventEmitter {
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO products (title, price, original_price, image_url, image_path, description, original_url, affiliate_url, store, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO products (title, price, original_price, image_url, image_path, description, original_url, affiliate_url, pix_price, coupon_url, store, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const result = stmt.run(
       product.title,
@@ -425,6 +464,8 @@ export class DatabaseManager extends EventEmitter {
       product.description ?? null,
       product.original_url,
       product.affiliate_url ?? null,
+      product.pix_price ?? null,
+      product.coupon_url ?? null,
       product.store,
       product.source
     )
@@ -537,13 +578,14 @@ export class DatabaseManager extends EventEmitter {
 
   saveAutoSendTarget(target: Omit<AutoSendTarget, 'id' | 'created_at'>): void {
     const stmt = this.db.prepare(`
-      INSERT INTO auto_send_targets (platform, group_id, group_name, enabled)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO auto_send_targets (platform, group_id, group_name, enabled, niche)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(platform, group_id) DO UPDATE SET
         group_name = excluded.group_name,
-        enabled = excluded.enabled
+        enabled = excluded.enabled,
+        niche = excluded.niche
     `)
-    stmt.run(target.platform, target.group_id, target.group_name, target.enabled ? 1 : 0)
+    stmt.run(target.platform, target.group_id, target.group_name, target.enabled ? 1 : 0, target.niche ?? null)
   }
 
   removeAutoSendTarget(platform: string, groupId: string): void {
@@ -557,8 +599,13 @@ export class DatabaseManager extends EventEmitter {
     ).run(enabled ? 1 : 0, platform, groupId)
   }
 
-  getEnabledAutoSendTargets(platform: 'whatsapp' | 'telegram'): AutoSendTarget[] {
-    return this.db.prepare('SELECT * FROM auto_send_targets WHERE platform = ? AND enabled = 1').all(platform) as AutoSendTarget[]
+  getEnabledAutoSendTargets(platform?: 'whatsapp' | 'telegram'): AutoSendTarget[] {
+    if (platform) {
+      return this.db.prepare('SELECT * FROM auto_send_targets WHERE platform = ? AND enabled = 1').all(platform) as AutoSendTarget[]
+    }
+    // Sem plataforma: usado pra juntar os nichos de todos os grupos e decidir
+    // o que a busca automática deve procurar.
+    return this.db.prepare('SELECT * FROM auto_send_targets WHERE enabled = 1').all() as AutoSendTarget[]
   }
 
   // Retorna o texto do grupo já resolvido: se o grupo aponta pra um template da
