@@ -442,12 +442,38 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('product:getAll', () => dbManager.getAllProducts())
   ipcMain.handle('product:getById', (_, id: number) => dbManager.getProductById(id))
   ipcMain.handle('product:create', async (_, data) => {
-    const product = dbManager.createProduct(data)
-    // createProduct devolve null quando a URL já está no banco. Sem avisar, a
-    // tela ficava sem resposta e parecia que o cadastro tinha falhado sem
-    // motivo — melhor dizer que é duplicado.
+    let product = dbManager.createProduct(data)
+
+    // createProduct devolve null quando a URL já está no banco. Recusar aqui
+    // atrapalhava justamente quem queria consertar um produto capturado antes
+    // — por exemplo, refazer o link de afiliado de algo que entrou pelo grupo.
+    // Em vez de barrar, atualiza o que já existe com os dados novos e refaz o
+    // link de afiliado.
     if (!product) {
-      throw new Error('Este produto já foi cadastrado antes (mesma URL). Ele já está na sua lista de Produtos.')
+      const existente = dbManager.getProductByUrl(data.original_url)
+      if (!existente) {
+        throw new Error('Não consegui salvar nem localizar este produto. Tente novamente.')
+      }
+      dbManager.updateProduct(existente.id!, {
+        title: data.title ?? existente.title,
+        price: data.price ?? existente.price,
+        original_price: data.original_price ?? existente.original_price,
+        image_url: data.image_url ?? existente.image_url,
+        description: data.description ?? existente.description,
+        // Zera o link pra ser regerado logo abaixo com as configurações e a
+        // sessão atuais — é o que resolve produto capturado antes de conectar
+        // a conta do Mercado Livre.
+        affiliate_url: undefined,
+      })
+      product = dbManager.getProductById(existente.id!)!
+      product.affiliate_url = undefined
+      log.info(`Produto já existia e foi atualizado: ${product.title}`)
+      dbManager.addLog({
+        type: 'info',
+        platform: 'system',
+        message: `Produto já cadastrado foi atualizado: ${product.title}`,
+        details: 'Os dados foram substituídos e o link de afiliado, regerado.',
+      })
     }
     // Tentar converter para link de afiliado automaticamente
     if (product.original_url && !product.affiliate_url) {
