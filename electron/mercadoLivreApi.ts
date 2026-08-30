@@ -67,6 +67,22 @@ export function extractFeaturedProductId(html: string): string | null {
 }
 
 /**
+ * Monta a URL do produto a partir do ID, escolhendo o caminho certo.
+ *
+ * Produto de catálogo (MLB123...) mora em /p/; "user product" (MLBU123...,
+ * com U depois da sigla do site) mora em /up/. Trocar os dois não é detalhe
+ * cosmético: testado ao vivo, o gerador de link de afiliado ACEITA
+ * /up/MLBU... e REJEITA /p/MLBU... com HTTP 400 — era por isso que alguns
+ * anúncios saíam com o link no formato simples em vez do meli.la.
+ */
+export function buildProductUrl(productId: string): string {
+  const id = productId.toUpperCase()
+  const prefixo = id.match(/^(ML[A-Z]*)\d/)?.[1] ?? ''
+  const caminho = prefixo.endsWith('U') ? 'up' : 'p'
+  return `https://www.mercadolivre.com.br/${caminho}/${id}`
+}
+
+/**
  * Segue encurtador e, caindo numa vitrine de afiliado, descobre o produto
  * divulgado — devolvendo a URL canônica. Função solta (não precisa de token
  * nem de banco) porque tanto a leitura de dados quanto a geração do link de
@@ -100,7 +116,7 @@ export async function resolveMercadoLivreProductUrl(url: string): Promise<string
       return atual
     }
     log.info(`Link de afiliado de terceiro resolvido para o produto ${productId}`)
-    return `https://www.mercadolivre.com.br/p/${productId}`
+    return buildProductUrl(productId)
   } catch (err) {
     log.warn('Não consegui resolver o link do Mercado Livre:', (err as Error).message)
     return atual
