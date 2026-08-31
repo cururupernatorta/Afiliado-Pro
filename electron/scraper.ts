@@ -4,7 +4,7 @@ import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
 import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
-import { MercadoLivreApi } from './mercadoLivreApi'
+import { MercadoLivreApi, isMercadoLivreProductUrl, resolveMercadoLivreProductUrl } from './mercadoLivreApi'
 import { ShopeeApi } from './shopeeApi'
 import { humanizeDescription } from './humanize'
 
@@ -290,7 +290,19 @@ export class ScraperManager {
     }
   }
 
-  private async scrapeMercadoLivre(url: string): Promise<Partial<Product>> {
+  private async scrapeMercadoLivre(rawUrl: string): Promise<Partial<Product>> {
+    // Resolve encurtador/vitrine de terceiro antes de qualquer coisa, e recusa
+    // o que não for produto: um link solto da home postado num grupo virava
+    // "produto" com o título da página e o primeiro R$ que aparecesse no
+    // corpo — e ia parar no grupo de destino com preço inventado.
+    const url = await resolveMercadoLivreProductUrl(rawUrl)
+    if (!isMercadoLivreProductUrl(url)) {
+      throw new Error(
+        'Esse link do Mercado Livre não aponta para um produto (parece ser a página inicial ou uma listagem), ' +
+        'então não há o que capturar.'
+      )
+    }
+
     // API oficial primeiro: ela devolve nome, imagem, preço e desconto real
     // sem depender da página, que o Mercado Livre vem barrando. Cobre URL de
     // catálogo (/p/MLB...); anúncio individual não é atendido pela API e cai

@@ -42,6 +42,18 @@ export function isMercadoLivreShortLink(url: string): boolean {
   }
 }
 
+/**
+ * A URL aponta mesmo para um produto?
+ *
+ * Sem isso, um link solto da home (`mercadolivre.com.br/`) postado num grupo
+ * virava "produto": o raspador pegava o título da página ("Mercado Livre") e
+ * o primeiro "R$" que encontrasse no corpo, e o anúncio ia pro grupo de
+ * destino com preço inventado. Aconteceu de verdade — R$ 100,00.
+ */
+export function isMercadoLivreProductUrl(url: string): boolean {
+  return /\/(?:p|up)\/ML[A-Z]*\d+|\/ML[A-Z]?-?\d{6,}/i.test(url)
+}
+
 /** Página de vitrine de um afiliado (o destino de um link meli.la). */
 export function isAffiliateStorefrontUrl(url: string): boolean {
   return /mercadolivre\.com(\.br)?\/social\//i.test(url)
@@ -60,10 +72,31 @@ export function isAffiliateStorefrontUrl(url: string): boolean {
  * `card-featured` na URL do cartão (os demais são recomendações). Confirmado
  * comparando dois links gerados por nós com o produto que os originou.
  */
+export function extractFeaturedProductUrl(html: string): string | null {
+  // Duas armadilhas encontradas em vitrines reais:
+  //  - algumas páginas trazem o JSON com as barras escapadas (/), então
+  //    procurar "/p/" literal não encontra nada;
+  //  - o produto em destaque nem sempre é de catálogo: pode ser anúncio
+  //    individual (produto.mercadolivre.com.br/MLB-123-slug-_JM), formato que
+  //    a busca por /p/ e /up/ ignorava. Foi o caso que fez o app republicar o
+  //    link do concorrente em vez do próprio.
+  const limpo = html.replace(/\\u002F/gi, '/').replace(/&amp;/g, '&')
+
+  // Pega o endereço inteiro do cartão em destaque e descarta rastreamento —
+  // devolver a URL pronta evita ter que remontar o caminho certo por tipo.
+  const match = limpo.match(/https?:\/\/[^"'\s\\]*mercadolivre\.com[^"'\s\\]*card-featured[^"'\s\\]*/i)
+  if (!match) return null
+
+  const url = match[0].split('#')[0].split('?')[0]
+  return /\/(?:p|up)\/ML[A-Z]*\d+|\/ML[A-Z]?-?\d{6,}/i.test(url) ? url : null
+}
+
+/** @deprecated use extractFeaturedProductUrl — mantido para os testes antigos. */
 export function extractFeaturedProductId(html: string): string | null {
-  const featured = html.match(/\/(?:p|up)\/(ML[A-Z]*\d+)[^"']*?card-featured/i)
-  if (featured) return featured[1].toUpperCase()
-  return null
+  const url = extractFeaturedProductUrl(html)
+  if (!url) return null
+  const m = url.match(/\/(?:p|up)\/(ML[A-Z]*\d+)/i)
+  return m ? m[1].toUpperCase() : null
 }
 
 /**
@@ -110,13 +143,13 @@ export async function resolveMercadoLivreProductUrl(url: string): Promise<string
       validateStatus: () => true,
       headers: { 'User-Agent': DESKTOP_UA },
     })
-    const productId = extractFeaturedProductId(String(data))
-    if (!productId) {
+    const produto = extractFeaturedProductUrl(String(data))
+    if (!produto) {
       log.warn(`Vitrine de afiliado sem produto identificável: ${atual.substring(0, 100)}`)
       return atual
     }
-    log.info(`Link de afiliado de terceiro resolvido para o produto ${productId}`)
-    return buildProductUrl(productId)
+    log.info(`Link de afiliado de terceiro resolvido para: ${produto}`)
+    return produto
   } catch (err) {
     log.warn('Não consegui resolver o link do Mercado Livre:', (err as Error).message)
     return atual
