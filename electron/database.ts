@@ -54,6 +54,7 @@ export interface Config {
   niche?: string
   auto_scrape_enabled: boolean
   auto_scrape_interval_hours: number
+  auto_scrape_interval_minutes: number
   group_link?: string
 }
 
@@ -169,6 +170,7 @@ export class DatabaseManager extends EventEmitter {
         niche TEXT,
         auto_scrape_enabled INTEGER DEFAULT 0,
         auto_scrape_interval_hours INTEGER DEFAULT 6,
+        auto_scrape_interval_minutes INTEGER DEFAULT 360,
         group_link TEXT
       );
 
@@ -355,6 +357,24 @@ export class DatabaseManager extends EventEmitter {
       log.error('Erro na migração de pix_price/coupon_url:', err)
     }
 
+    // Migração: intervalo da busca automática passa a ser em MINUTOS. Em horas
+    // inteiras o mínimo possível era 1h, e para testar (ou para quem quer
+    // acompanhar oferta relâmpago) isso é tempo demais. Converte o valor que já
+    // estava salvo para não mudar o comportamento de quem já tinha configurado.
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(config)').all() as any[]
+      if (!columns.some((c) => c.name === 'auto_scrape_interval_minutes')) {
+        this.db.exec('ALTER TABLE config ADD COLUMN auto_scrape_interval_minutes INTEGER DEFAULT 360')
+        this.db.exec(`
+          UPDATE config
+             SET auto_scrape_interval_minutes = COALESCE(NULLIF(auto_scrape_interval_hours, 0), 6) * 60
+        `)
+        log.info('Migração: intervalo da busca automática convertido de horas para minutos')
+      }
+    } catch (err) {
+      log.error('Erro na migração do intervalo em minutos:', err)
+    }
+
     // Migração: nicho por grupo de destino. Antes existia um nicho único e
     // global, e todo produto capturado ia pra todos os grupos — quem tem
     // grupos de assuntos diferentes recebia tudo em todos.
@@ -514,6 +534,7 @@ export class DatabaseManager extends EventEmitter {
         niche: '',
         auto_scrape_enabled: false,
         auto_scrape_interval_hours: 6,
+        auto_scrape_interval_minutes: 360,
         group_link: '',
       }
     }

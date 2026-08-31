@@ -245,6 +245,14 @@ const createTray = (): void => {
   tray.on('click', showWindow)
 }
 
+// Busca automática de ofertas: o agendamento precisa ser refeito quando a
+// configuração muda, e o botão "Buscar agora" (definido em setupIpcHandlers,
+// fora deste escopo) precisa alcançar a mesma função. Por isso ficam aqui fora.
+let autoScrapeTimer: NodeJS.Timeout | null = null
+let buscaEmAndamento = false
+let buscarOfertasAgora: (() => Promise<number>) | null = null
+let reagendarBuscaAutomatica: (() => void) | null = null
+
 app.whenReady().then(async () => {
   try {
     log.info('Afiliado Pro iniciando...')
@@ -325,10 +333,20 @@ app.whenReady().then(async () => {
     setupAutoUpdater()
 
     // Iniciar busca automática de ofertas
-    const startAutoScrape = async () => {
+    const startAutoScrape = async (): Promise<number> => {
+      // O botão "Buscar agora" e o agendamento podem cair em cima um do outro.
+      // Duas varreduras simultâneas nas 4 lojas dobrariam as chamadas de API e
+      // ainda disputariam o mesmo produto no `productExistsByUrl`, criando
+      // duplicata — a checagem e a inserção não são atômicas entre si.
+      if (buscaEmAndamento) {
+        log.info('Busca de ofertas já está rodando — ignorando o novo disparo')
+        return 0
+      }
+      buscaEmAndamento = true
+      let novasOfertas = 0
       try {
         const cfg = dbManager.getConfig()
-        if (!cfg.auto_scrape_enabled) return
+        if (!cfg.auto_scrape_enabled) return 0
 
         // A busca procura a união do nicho geral com o nicho de cada grupo de
         // destino. Sem isso, quem define nichos diferentes por grupo só
@@ -340,7 +358,7 @@ app.whenReady().then(async () => {
           .map((t) => t.niche || '')
           .filter(Boolean)
         const nicho = [...new Set([cfg.niche || '', ...nichosDosGrupos].join(',').split(',').map((k) => k.trim()).filter(Boolean))].join(', ')
-        if (!nicho) return
+        if (!nicho) return 0
 
         // A busca de cada loja só faz sentido se der pra gerar link de afiliado
         // dela depois — sem credencial, o produto capturado ficaria com o link
@@ -367,6 +385,7 @@ app.whenReady().then(async () => {
                   dbManager.updateProduct(created.id!, { affiliate_url: affiliateUrl })
                   created.affiliate_url = affiliateUrl
                 }
+                novasOfertas++
                 log.info(`Oferta encontrada e salva: ${deal.title}`)
                 dbManager.addLog({
                   type: 'success',
@@ -388,14 +407,31 @@ app.whenReady().then(async () => {
         }
       } catch (err) {
         log.error('Erro na busca automática:', err)
+      } finally {
+        buscaEmAndamento = false
       }
+      return novasOfertas
     }
 
-    const cfg = dbManager.getConfig()
-    if (cfg.auto_scrape_enabled && cfg.niche) {
-      startAutoScrape()
-      setInterval(startAutoScrape, (cfg.auto_scrape_interval_hours || 6) * 60 * 60 * 1000)
+    // Antes o agendamento era criado uma única vez, na inicialização, dentro de
+    // um `if` que lia a configuração daquele momento. Ligar a busca automática
+    // (ou mudar o intervalo) com o app aberto não tinha efeito nenhum até
+    // reiniciar: quem ligava e ficava esperando não recebia nada, sem nenhum
+    // sinal do porquê. Agora o agendamento é refeito toda vez que a
+    // configuração é salva.
+    reagendarBuscaAutomatica = () => {
+      if (autoScrapeTimer) { clearInterval(autoScrapeTimer); autoScrapeTimer = null }
+      const atual = dbManager.getConfig()
+      if (!atual.auto_scrape_enabled) return
+      const minutos = Math.max(15, atual.auto_scrape_interval_minutes || 360)
+      autoScrapeTimer = setInterval(startAutoScrape, minutos * 60 * 1000)
+      log.info(`Busca automática de ofertas agendada a cada ${minutos} min`)
     }
+    buscarOfertasAgora = startAutoScrape
+
+    const cfg = dbManager.getConfig()
+    reagendarBuscaAutomatica()
+    if (cfg.auto_scrape_enabled && cfg.niche) startAutoScrape()
 
     app.on('activate', () => {
       if (mainWindow === null) createWindow()
@@ -531,7 +567,19 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('product:scrape', (_, url: string) => scraperManager.scrapeProduct(url))
 
   ipcMain.handle('config:get', () => dbManager.getConfig())
-  ipcMain.handle('config:save', (_, config) => dbManager.saveConfig(config))
+  ipcMain.handle('config:save', (_, config) => {
+    dbManager.saveConfig(config)
+    // Sem isto, mudar o intervalo ou ligar a busca só passa a valer no próximo
+    // início do app.
+    reagendarBuscaAutomatica?.()
+  })
+  ipcMain.handle('scrape:run-now', async () => {
+    if (!buscarOfertasAgora) return { ok: false, erro: 'A busca de ofertas ainda não foi inicializada.' }
+    const cfg = dbManager.getConfig()
+    if (!cfg.auto_scrape_enabled) return { ok: false, erro: 'A busca automática está desligada.' }
+    const novas = await buscarOfertasAgora()
+    return { ok: true, novas }
+  })
 
   ipcMain.handle('queue:getJobs', () => queueManager.getJobs())
   ipcMain.handle('queue:pause', () => queueManager.pause())

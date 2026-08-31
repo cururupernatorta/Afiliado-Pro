@@ -40,6 +40,7 @@ export function installElectronMockIfNeeded() {
     productUpdate: async () => {},
     productDelete: async () => {},
     productScrape: async () => ({ title: 'Produto de exemplo', price: 99.9, store: 'shopee', original_url: '' }),
+    scrapeRunNow: async () => ({ ok: true, novas: 0 }),
 
     configGet: async () => ({}),
     configSave: async () => {},

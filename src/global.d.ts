@@ -33,6 +33,7 @@ export interface ElectronAPI {
   productUpdate: (id: number, data: any) => Promise<void>
   productDelete: (id: number) => Promise<void>
   productScrape: (url: string) => Promise<any>
+  scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
 
   // Config
   configGet: () => Promise<any>

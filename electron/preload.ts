@@ -32,6 +32,7 @@ export interface ElectronAPI {
   productUpdate: (id: number, data: any) => Promise<void>
   productDelete: (id: number) => Promise<void>
   productScrape: (url: string) => Promise<any>
+  scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
 
   configGet: () => Promise<any>
   configSave: (config: any) => Promise<void>
@@ -113,6 +114,7 @@ const api: ElectronAPI = {
   productUpdate: (id, data) => ipcRenderer.invoke('product:update', id, data),
   productDelete: (id) => ipcRenderer.invoke('product:delete', id),
   productScrape: (url) => ipcRenderer.invoke('product:scrape', url),
+  scrapeRunNow: () => ipcRenderer.invoke('scrape:run-now'),
 
   configGet: () => ipcRenderer.invoke('config:get'),
   configSave: (config) => ipcRenderer.invoke('config:save', config),

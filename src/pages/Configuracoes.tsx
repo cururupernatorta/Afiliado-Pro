@@ -55,10 +55,12 @@ export default function Configuracoes() {
     stealth_cooldown_minutes: 10,
     niche: '',
     auto_scrape_enabled: false,
-    auto_scrape_interval_hours: 6,
+    auto_scrape_interval_minutes: 360,
     group_link: '',
   })
   const [saved, setSaved] = useState(false)
+  const [buscandoOfertas, setBuscandoOfertas] = useState(false)
+  const [resultadoBusca, setResultadoBusca] = useState('')
   const [saving, setSaving] = useState(false)
   const [whatsappGroups, setWhatsappGroups] = useState<any[]>([])
   const [telegramGroups, setTelegramGroups] = useState<any[]>([])
@@ -131,7 +133,7 @@ export default function Configuracoes() {
           stealth_cooldown_minutes: cfg.stealth_cooldown_minutes || 10,
           niche: cfg.niche || '',
           auto_scrape_enabled: !!cfg.auto_scrape_enabled,
-          auto_scrape_interval_hours: cfg.auto_scrape_interval_hours || 6,
+          auto_scrape_interval_minutes: cfg.auto_scrape_interval_minutes || (cfg.auto_scrape_interval_hours || 6) * 60,
           group_link: cfg.group_link || '',
         })
         setConfig(cfg)
@@ -210,7 +212,7 @@ export default function Configuracoes() {
         stealth_cooldown_minutes: formData.stealth_cooldown_minutes,
         niche: formData.niche || null,
         auto_scrape_enabled: formData.auto_scrape_enabled ? 1 : 0,
-        auto_scrape_interval_hours: formData.auto_scrape_interval_hours,
+        auto_scrape_interval_minutes: formData.auto_scrape_interval_minutes,
         group_link: formData.group_link || null,
       })
       const cfg = await window.electronAPI.configGet()
@@ -238,6 +240,34 @@ export default function Configuracoes() {
   // banco na próxima visita e mostrava desligado de novo — parecia que a busca
   // "parou sozinha" ou que o auto-repost "não funciona", quando na verdade
   // nunca tinha sido salvo.
+  // 45 vira "45min", 90 vira "1h30" — mostrar "1.5h" num controle que anda de
+  // 15 em 15 minutos fica ilegível.
+  const formatarIntervalo = (minutos: number) => {
+    if (minutos < 60) return `${minutos}min`
+    const horas = Math.floor(minutos / 60)
+    const resto = minutos % 60
+    return resto === 0 ? `${horas}h` : `${horas}h${String(resto).padStart(2, '0')}`
+  }
+
+  const buscarOfertasAgora = async () => {
+    setBuscandoOfertas(true)
+    setResultadoBusca('')
+    try {
+      const r = await window.electronAPI.scrapeRunNow()
+      if (!r.ok) {
+        setResultadoBusca(r.erro || 'Não foi possível buscar agora.')
+      } else if (r.novas === 0) {
+        setResultadoBusca('Busca concluída — nenhuma oferta nova (as repetidas são ignoradas).')
+      } else {
+        setResultadoBusca(`Busca concluída — ${r.novas} oferta(s) nova(s). Veja em Produtos e nos Logs.`)
+      }
+    } catch (error) {
+      setResultadoBusca('Erro na busca: ' + ((error as Error).message || 'erro desconhecido'))
+    } finally {
+      setBuscandoOfertas(false)
+    }
+  }
+
   const toggleMasterSwitch = async (field: 'auto_scrape_enabled' | 'auto_repost_enabled', value: boolean) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
     try {
@@ -498,19 +528,33 @@ export default function Configuracoes() {
           {formData.auto_scrape_enabled && (
             <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-4">
               <div>
-                <label className="text-sm text-foreground mb-2 block">Intervalo de busca (horas)</label>
+                <label className="text-sm text-foreground mb-2 block">Intervalo de busca</label>
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
-                    min="1"
-                    max="24"
-                    value={formData.auto_scrape_interval_hours}
-                    onChange={(e) => updateField('auto_scrape_interval_hours', parseInt(e.target.value))}
+                    min="15"
+                    max="1440"
+                    step="15"
+                    value={formData.auto_scrape_interval_minutes}
+                    onChange={(e) => updateField('auto_scrape_interval_minutes', parseInt(e.target.value))}
                     className="flex-1 h-2 rounded-lg bg-secondary appearance-none cursor-pointer accent-primary"
                   />
-                  <span className="text-sm font-mono text-foreground w-12 text-right">{formData.auto_scrape_interval_hours}h</span>
+                  <span className="text-sm font-mono text-foreground w-14 text-right">{formatarIntervalo(formData.auto_scrape_interval_minutes)}</span>
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">A cada quantas horas o app busca novas ofertas</p>
+                <p className="text-xs text-muted-foreground mt-1">De quanto em quanto tempo o app busca novas ofertas — de 15 minutos a 24 horas</p>
+
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={buscarOfertasAgora}
+                    disabled={buscandoOfertas}
+                    className="px-4 py-2 rounded-lg bg-secondary hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed text-sm text-foreground transition-colors"
+                  >
+                    {buscandoOfertas ? 'Buscando ofertas...' : 'Buscar ofertas agora'}
+                  </button>
+                  {resultadoBusca && <p className="text-xs text-muted-foreground mt-2">{resultadoBusca}</p>}
+                  <p className="text-xs text-muted-foreground mt-1">Roda a busca na hora, sem esperar o intervalo. Não altera o agendamento.</p>
+                </div>
               </div>
             </motion.div>
           )}
