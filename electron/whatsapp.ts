@@ -40,6 +40,25 @@ export class WhatsAppManager {
   private readonly HISTORY_MAX_PER_GROUP = 30
   private readonly PROCESSED_IDS_CAP = 5000
 
+  // Diagnóstico de recepção. Quando o tester diz "parou de capturar", o log
+  // não distinguia as causas possíveis: mensagem nenhuma chegando, mensagem
+  // chegando de grupo não monitorado, ou chegando sem link de loja. Estes
+  // contadores viram um resumo periódico na tela de Logs.
+  private recepcao = {
+    lotes: 0,
+    mensagens: 0,
+    porTipo: {} as Record<string, number>,
+    aposFiltroDeTipo: 0,
+    semConteudo: 0,
+    stubs: {} as Record<string, number>,
+    semTexto: 0,
+    comTexto: 0,
+    deGrupoMonitorado: 0,
+    comLink: 0,
+  }
+  private relatorioTimer: NodeJS.Timeout | null = null
+  private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
+
   constructor(dbManager: DatabaseManager, queueManager: QueueManager, scraperManager: ScraperManager, userDataPath: string) {
     this.dbManager = dbManager
     this.queueManager = queueManager
@@ -47,8 +66,45 @@ export class WhatsAppManager {
     this.authPath = path.join(userDataPath, 'whatsapp-auth')
   }
 
+  // Resumo periódico do que o WhatsApp entregou. Sem isto, "parou de capturar"
+  // é um silêncio sem causa no log: não dá pra saber se o socket parou de
+  // receber, se o filtro de tipo descartou, se veio de grupo não monitorado ou
+  // se simplesmente não passou oferta nenhuma no período.
+  private iniciarRelatorioDeRecepcao(): void {
+    if (this.relatorioTimer) return
+    this.relatorioTimer = setInterval(() => this.reportarRecepcao(), this.RELATORIO_INTERVALO_MS)
+  }
+
+  private reportarRecepcao(): void {
+    const r = this.recepcao
+    const tipos = Object.entries(r.porTipo).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'
+    const monitorados = this.dbManager.getMonitoredGroups('whatsapp')
+
+    this.dbManager.addLog({
+      // Receber zero mensagem por 30 minutos com N grupos monitorados é o
+      // sintoma exato que estamos caçando — sobe pra warning pra ficar visível.
+      type: r.mensagens === 0 && monitorados.length > 0 ? 'warning' : 'info',
+      platform: 'whatsapp',
+      message: r.mensagens === 0 && monitorados.length > 0
+        ? `Nenhuma mensagem recebida do WhatsApp nos últimos 30 min (${monitorados.length} grupo(s)/canal(is) monitorado(s))`
+        : `Recepção do WhatsApp nos últimos 30 min: ${r.mensagens} mensagem(ns), ${r.deGrupoMonitorado} de grupo monitorado`,
+      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}`,
+    })
+
+    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+  }
+
   async connect(): Promise<void> {
     if (this.status === 'connected' || this.status === 'connecting') return
+
+    // Encerra o socket anterior antes de abrir outro. Cada reconexão criava um
+    // socket novo e deixava o antigo pendurado com os listeners ainda ligados —
+    // e, pior, com uma segunda cópia em memória do estado de autenticação
+    // (`useMultiFileAuthState` é chamado de novo abaixo). Duas cópias gravando
+    // as mesmas chaves do Signal na mesma pasta é caminho conhecido pra sessão
+    // corrompida, que é o `badSession` (statusCode 500) que aparece o dia todo
+    // no log do testador.
+    this.encerrarSocketAnterior()
 
     this.status = 'connecting'
     // O contador NÃO é zerado aqui: cada tentativa de reconexão passa por este
@@ -143,6 +199,7 @@ export class WhatsAppManager {
           sendToRenderer('whatsapp:status', 'connected')
           log.info('WhatsApp conectado')
           this.startMonitoring()
+          this.iniciarRelatorioDeRecepcao()
         }
       })
 
@@ -158,9 +215,17 @@ export class WhatsAppManager {
         // por acaso quando batch de tipos diferentes vinha misturado. Mantém o
         // filtro de histórico pra grupo, mas deixa passar "append" quando a
         // mensagem é de um canal (@newsletter).
+        // Contadores do diagnóstico (ver reportarRecepcao): sem eles, "não
+        // capturou nada" era indistinguível de "não chegou mensagem nenhuma",
+        // "chegou e o tipo foi descartado" ou "chegou de grupo não monitorado".
+        this.recepcao.lotes++
+        this.recepcao.mensagens += m.messages.length
+        this.recepcao.porTipo[m.type] = (this.recepcao.porTipo[m.type] ?? 0) + 1
+
         const messages = m.type === 'notify'
           ? m.messages
           : m.messages.filter((msg) => msg.key.remoteJid?.endsWith('@newsletter'))
+        this.recepcao.aposFiltroDeTipo += messages.length
         if (messages.length === 0) return
         // Em paralelo: um burst de várias mensagens não deve esperar a
         // raspagem+repost completo de uma pra só então começar a próxima.
@@ -179,6 +244,24 @@ export class WhatsAppManager {
       log.error('Erro ao conectar WhatsApp:', error)
       this.status = 'disconnected'
       sendToRenderer('whatsapp:status', 'error')
+    }
+  }
+
+  private encerrarSocketAnterior(): void {
+    if (!this.sock) return
+    const antigo = this.sock
+    this.sock = null
+    try {
+      // Ordem importa: tirar os listeners primeiro, senão o `end()` dispara um
+      // 'connection.update' de fechamento que voltaria pelo handler antigo e
+      // agendaria mais uma reconexão em cima da que já está acontecendo.
+      antigo.ev.removeAllListeners('connection.update')
+      antigo.ev.removeAllListeners('messages.upsert')
+      antigo.ev.removeAllListeners('messaging-history.set')
+      antigo.ev.removeAllListeners('creds.update')
+      antigo.end(undefined)
+    } catch (err) {
+      log.warn('Erro ao encerrar o socket anterior do WhatsApp:', err)
     }
   }
 
@@ -440,7 +523,22 @@ export class WhatsAppManager {
   }
 
   private async handleIncomingMessage(msg: proto.IWebMessageInfo): Promise<void> {
-    if (!msg.message || msg.key.fromMe) return
+    if (msg.key.fromMe) return
+    // Mensagem sem conteúdo é o ponto cego mais perigoso do fluxo: quando a
+    // sessão Signal do dispositivo se desencontra, o WhatsApp entrega a
+    // mensagem mas o Baileys não consegue decifrar, e ela chega com
+    // `message` nulo (é o "Aguardando esta mensagem" do celular). Antes isso
+    // saía por um `return` mudo — do lado de fora ficava idêntico a "não
+    // chegou mensagem nenhuma", que é exatamente a dúvida que os relatos dos
+    // testadores levantaram.
+    if (!msg.message) {
+      this.recepcao.semConteudo++
+      if (msg.messageStubType != null) {
+        const nome = String(msg.messageStubType)
+        this.recepcao.stubs[nome] = (this.recepcao.stubs[nome] ?? 0) + 1
+      }
+      return
+    }
     // Grupo grande de ofertas costuma ter mensagens temporárias ativadas —
     // nesse caso o Baileys embrulha a mensagem de verdade um nível mais
     // fundo (ephemeralMessage.message), e o mesmo vale pra "ver uma vez"
@@ -448,17 +546,28 @@ export class WhatsAppManager {
     // campos abaixo ficam todos undefined e a mensagem passa batida com
     // texto vazio — sem log nenhum, porque essa função retorna cedo demais.
     const content = this.unwrapMessage(msg.message)
+    // Grupo de ofertas manda o link na legenda de mídia tanto quanto em texto
+    // solto — vídeo e documento estavam de fora e sumiam sem rastro.
     const text = content?.conversation ||
                  content?.extendedTextMessage?.text ||
-                 content?.imageMessage?.caption || ''
-    if (!text) return
+                 content?.imageMessage?.caption ||
+                 content?.videoMessage?.caption ||
+                 content?.documentMessage?.caption || ''
+    if (!text) {
+      this.recepcao.semTexto++
+      return
+    }
+    this.recepcao.comTexto++
 
     const urlRegex = /(https?:\/\/[^\s]+)/g
     const urls = text.match(urlRegex)
     if (!urls) return
 
+    this.recepcao.comLink++
+
     const monitoredGroups = this.dbManager.getMonitoredGroups('whatsapp')
     const isMonitored = monitoredGroups.some((g) => g.group_id === msg.key.remoteJid)
+    if (isMonitored) this.recepcao.deGrupoMonitorado++
     if (!isMonitored) {
       // Só loga quando o link já bate com uma loja suportada (não é ruído de
       // qualquer URL em qualquer grupo) — serve pra distinguir "o grupo nem
