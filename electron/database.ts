@@ -193,6 +193,16 @@ export class DatabaseManager extends EventEmitter {
 
       INSERT OR IGNORE INTO config (id) VALUES (1);
 
+      CREATE TABLE IF NOT EXISTS history_anchors (
+        platform TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        msg_id TEXT NOT NULL,
+        from_me INTEGER NOT NULL DEFAULT 0,
+        participant TEXT,
+        msg_ts INTEGER NOT NULL,
+        PRIMARY KEY (platform, group_id)
+      );
+
       CREATE TABLE IF NOT EXISTS group_monitors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         platform TEXT NOT NULL CHECK(platform IN ('whatsapp', 'telegram')),
@@ -917,7 +927,50 @@ export class DatabaseManager extends EventEmitter {
   }
 
   getLogs(limit: number = 100, offset: number = 0): LogEntry[] {
-    return this.db.prepare('SELECT * FROM logs ORDER BY created_at DESC LIMIT ? OFFSET ?').all(limit, offset) as LogEntry[]
+    // `CURRENT_TIMESTAMP` do SQLite grava em UTC, e a tela mostrava esse valor
+    // cru — no Brasil o log aparecia 3 horas adiantado. Isso atrapalha o
+    // diagnóstico de verdade: o testador diz "parou às 17h", o log diz 20h, e
+    // são o mesmo instante. Converte na leitura, o que também acerta as linhas
+    // antigas, em vez de mudar a gravação e deixar o banco com dois padrões.
+    return this.db
+      .prepare(`
+        SELECT id, type, platform, message, details,
+               datetime(created_at, 'localtime') AS created_at
+        FROM logs ORDER BY created_at DESC LIMIT ? OFFSET ?
+      `)
+      .all(limit, offset) as LogEntry[]
+  }
+
+  /**
+   * Âncora de histórico por grupo: a mensagem mais antiga que o app viu naquele
+   * chat. O `fetchMessageHistory` do Baileys exige uma chave de mensagem real
+   * para saber de onde pedir o que veio antes.
+   *
+   * Precisa ficar no banco, não em memória: guardada só em memória, ela zerava
+   * a cada reinício — e é logo depois de uma atualização (que reinicia o app)
+   * que o usuário mais precisa recuperar o que passou. Na prática a varredura
+   * ficava cega exatamente no momento em que era mais necessária.
+   */
+  salvarAncoraDeHistorico(platform: string, groupId: string, key: { id?: string | null; fromMe?: boolean | null; participant?: string | null }, timestampMs: number): void {
+    if (!key.id || !timestampMs) return
+    this.db
+      .prepare(`
+        INSERT INTO history_anchors (platform, group_id, msg_id, from_me, participant, msg_ts)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(platform, group_id) DO UPDATE SET
+          msg_id = excluded.msg_id, from_me = excluded.from_me,
+          participant = excluded.participant, msg_ts = excluded.msg_ts
+        WHERE excluded.msg_ts < history_anchors.msg_ts
+      `)
+      .run(platform, groupId, key.id, key.fromMe ? 1 : 0, key.participant ?? null, timestampMs)
+  }
+
+  getAncoraDeHistorico(platform: string, groupId: string): { id: string; fromMe: boolean; participant?: string; ts: number } | undefined {
+    const row = this.db
+      .prepare('SELECT msg_id, from_me, participant, msg_ts FROM history_anchors WHERE platform = ? AND group_id = ?')
+      .get(platform, groupId) as any
+    if (!row) return undefined
+    return { id: row.msg_id, fromMe: row.from_me === 1, participant: row.participant ?? undefined, ts: row.msg_ts }
   }
 
   close(): void {

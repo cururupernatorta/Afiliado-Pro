@@ -243,9 +243,27 @@ export class TelegramManager {
     })
   }
 
-  private async processDetectedUrl(url: string): Promise<void> {
+  private async processDetectedUrl(url: string, viaAgregador = false): Promise<void> {
     const store = this.scraperManager.affiliateManager?.detectStore(url)
-    if (!store) return
+    if (!store) {
+      // Mesmo tratamento do WhatsApp: grupo agregador manda o encurtador dele,
+      // não o link da loja. A página tem um botão apontando para a loja, e daí
+      // o fluxo normal chega ao produto e gera o link de afiliado DO USUÁRIO.
+      // `viaAgregador` corta a recursão em um nível.
+      if (!viaAgregador) {
+        const daLoja = await this.scraperManager.resolverLinkDeAgregador(url)
+        if (daLoja) {
+          this.dbManager.addLog({
+            type: 'info',
+            platform: 'telegram',
+            message: 'Link de agregador resolvido para a loja',
+            details: `${url.substring(0, 70)} -> ${daLoja.substring(0, 90)}`,
+          })
+          await this.processDetectedUrl(daLoja, true)
+        }
+      }
+      return
+    }
     try {
       log.info(`Link detectado no Telegram: ${url}`)
 

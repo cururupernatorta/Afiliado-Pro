@@ -41,6 +41,7 @@ export interface ElectronAPI {
   productDelete: (id: number) => Promise<void>
   productScrape: (url: string) => Promise<any>
   scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
+  whatsappReceptionNow: () => Promise<{ mensagens: number; deGrupoMonitorado: number; proprias: number; jaVistas: number; naoDecifradas: number; comTexto: number; comLink: number; flushesForcados: number; monitorados: number; porChat: { jid: string; n: number }[] }>
   whatsappSweepHistory: (horas: number) => Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number; semAncora?: boolean }>
 
   // Config

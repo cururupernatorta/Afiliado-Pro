@@ -102,7 +102,10 @@ export class ScraperManager {
     const html = await renderPageHtml(url, {
       userAgent: useMobileUA ? MOBILE_UA : DESKTOP_UA,
       waitMs: options.waitMs ?? 3500,
-      timeoutMs: 25000,
+      // O teto total precisa deixar margem sobre a espera: carregar a página já
+      // consome alguns segundos antes de o polling começar. Com teto fixo em
+      // 25 s, pedir 25 s de espera nunca teria efeito.
+      timeoutMs: (options.waitMs ?? 3500) + 20000,
       readyPattern: options.readyPattern,
     })
     return { $: cheerio.load(html), html }
@@ -221,6 +224,103 @@ export class ScraperManager {
       ''
 
     return { title, price, imageUrl, description }
+  }
+
+  // Uma resolução de cada vez. Um grupo agregador manda dezenas de links de
+  // uma vez (medido: 38 numa única janela), e cada resolução abre uma janela
+  // headless — em paralelo isso derrubaria a máquina do usuário.
+  private filaDeAgregador: Promise<unknown> = Promise.resolve()
+  private agregadoresNaFila = 0
+  private readonly MAX_AGREGADOR_NA_FILA = 12
+
+  /**
+   * Link de domínio que não é loja conhecida: abre a página e procura dentro
+   * dela um link de loja suportada.
+   *
+   * É o que destrava os grupos agregadores. Medido num caso real: o grupo posta
+   * `ofertaclick.com.br/PnKML6bI`, a página tem um botão "Pegar promoção" que
+   * aponta para `meli.la/1rnzCL8` (o link de afiliado DELES), e daí o
+   * resolvedor do Mercado Livre que já existe chega ao produto canônico. Sem
+   * este passo, os 38 links daquela janela foram todos descartados.
+   *
+   * Devolve a URL da loja encontrada, ou null. Quem chama segue o fluxo normal
+   * a partir dela — inclusive a geração do link de afiliado DO USUÁRIO, que é o
+   * ponto: o produto é o mesmo, a comissão passa a ser dele.
+   */
+  async resolverLinkDeAgregador(url: string): Promise<string | null> {
+    if (this.agregadoresNaFila >= this.MAX_AGREGADOR_NA_FILA) {
+      log.warn(`Fila de resolução de agregador cheia (${this.agregadoresNaFila}) — ignorando ${url.substring(0, 60)}`)
+      return null
+    }
+    this.agregadoresNaFila++
+    const tarefa = this.filaDeAgregador.then(() => this.resolverAgregadorAgora(url))
+    // A fila não pode quebrar se uma resolução falhar.
+    this.filaDeAgregador = tarefa.catch(() => undefined)
+    try {
+      return await tarefa
+    } finally {
+      this.agregadoresNaFila--
+    }
+  }
+
+  /**
+   * Primeiro link que e de loja suportada e nao e midia.
+   *
+   * Quem decide o que e loja continua sendo o `detectStore` - duplicar essa
+   * regra em dois lugares e como um deles fica desatualizado. O que se
+   * acrescenta aqui e descartar imagem e arquivo estatico: foto de produto mora
+   * no mesmo dominio-raiz da loja em todas as quatro (`m.media-amazon.com`
+   * contem "amazon.com"), e a primeira versao deste resolvedor devolveu
+   * justamente um `.jpg` da CDN da Amazon como se fosse produto.
+   */
+  private primeiroLinkDeLoja(urls: string[]): string | null {
+    const EH_MIDIA = /(?:media-amazon|ssl-images-amazon|aliexpress-media|alicdn|mlstatic|susercontent)\.com/i
+    const EH_ARQUIVO = /\.(?:jpg|jpeg|png|webp|gif|svg|css|js|woff2?|mp4|ico)(?:$|[?#])/i
+    for (const bruto of urls) {
+      const u = bruto.replace(/[.,;)\\]+$/, '')
+      if (EH_MIDIA.test(u) || EH_ARQUIVO.test(u)) continue
+      if (!this.affiliateManager.detectStore(u)) continue
+      return u
+    }
+    return null
+  }
+
+  private async resolverAgregadorAgora(url: string): Promise<string | null> {
+    // Essas paginas costumam ser client-side: no teste real o `axios` levou
+    // HTTP 500 e o navegador carregou normalmente.
+    try {
+      const { $, html } = await this.fetchPageHeadless(url, false, { waitMs: 8000 })
+
+      // Os links de verdade da pagina primeiro (`<a href>`): e onde esta o
+      // botao "Pegar promocao". Varrer o HTML cru pega lixo de script - nos
+      // testes veio uma imagem da CDN da Amazon e depois um `link.amazon/B00...`
+      // que nao e produto nenhum. O DOM e preciso.
+      const dosLinks: string[] = []
+      $('a[href]').each((_, el) => {
+        const href = $(el).attr('href')
+        if (href && /^https?:\/\//i.test(href)) dosLinks.push(href)
+      })
+      const doDom = this.primeiroLinkDeLoja(dosLinks)
+      if (doDom) {
+        log.info(`Agregador resolvido pelo botao da pagina: ${url.substring(0, 45)} -> ${doDom.substring(0, 70)}`)
+        return doDom
+      }
+
+      // Reserva: alguns sites montam o botao por JavaScript e o endereco so
+      // existe dentro de um bloco de script, com as barras escapadas.
+      const limpo = html.replace(/\\u002F/gi, '/').replace(/&amp;/g, '&')
+      const doHtml = this.primeiroLinkDeLoja(limpo.match(/https?:\/\/[^"'\s\\<>)\]]+/gi) ?? [])
+      if (doHtml) {
+        log.info(`Agregador resolvido pelo HTML: ${url.substring(0, 45)} -> ${doHtml.substring(0, 70)}`)
+        return doHtml
+      }
+
+      log.warn(`Agregador sem link de loja na pagina: ${url.substring(0, 60)}`)
+      return null
+    } catch (err) {
+      log.warn(`Nao consegui abrir a pagina do agregador ${url.substring(0, 50)}: ${(err as Error).message}`)
+      return null
+    }
   }
 
   private async scrapeShopee(url: string): Promise<Partial<Product>> {
@@ -579,7 +679,16 @@ export class ScraperManager {
       // nunca detectava "pronto" e sempre esperava o teto inteiro, cortando a
       // renderização antes da hora em conexões mais lentas.
       const readyPattern = /salePrice|skuPrice|actSkuCalPrice|minActivityAmount|discountPrice|promotionPrice|R\$\s?\d/
-      const { $, html } = await this.fetchPageHeadless(url, true, { waitMs: 12000, readyPattern })
+      const { $, html } = await this.fetchPageHeadless(url, true, {
+        // 12 s era pouco: no teste local, um produto real do log do testador
+        // consumiu 9,2 s dos 12 numa máquina ociosa — na máquina dele estourou,
+        // e o log registrou "sinal de pronto encontrado=false" com a página já
+        // carregada (240 KB). Não era bloqueio nem produto inválido, era falta
+        // de tempo. O polling sai assim que o preço aparece, então esperar mais
+        // não custa nada no caso comum.
+        waitMs: 25000,
+        readyPattern,
+      })
       const matched = readyPattern.test(html)
       const extracted = this.extractAliExpressFields($, html)
       trail.push(`headless: sinal de "pronto" encontrado=${matched}, preço extraído=${extracted.price}, ${html.length} bytes`)

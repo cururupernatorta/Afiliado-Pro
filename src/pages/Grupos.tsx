@@ -26,6 +26,8 @@ export default function Grupos() {
   const [horasVarredura, setHorasVarredura] = useState(3)
   const [varrendo, setVarrendo] = useState(false)
   const [resultadoVarredura, setResultadoVarredura] = useState('')
+  const [recepcao, setRecepcao] = useState<string[] | null>(null)
+  const [lendoRecepcao, setLendoRecepcao] = useState(false)
 
   const loadGroups = async () => {
     setLoading(true)
@@ -109,6 +111,33 @@ export default function Grupos() {
   }
 
   const filteredGroups = groups.filter((g) => g.platform === activeTab)
+
+  // O relatório automático só sai de 30 em 30 min. Numa sessão de teste ao
+  // vivo isso é tempo demais: sem ele não dá pra saber se a mensagem sequer
+  // chegou, e o usuário fica adivinhando.
+  const verRecepcaoAgora = async () => {
+    setLendoRecepcao(true)
+    try {
+      const r = await window.electronAPI.whatsappReceptionNow()
+      const linhas = [
+        `${r.mensagens} mensagem(ns) recebida(s) desde o último relatório`,
+        `${r.deGrupoMonitorado} de grupo monitorado · ${r.comLink} com link de loja · ${r.comTexto} com texto`,
+        `${r.proprias} sua(s) (ignoradas de propósito) · ${r.jaVistas} já vista(s) · ${r.naoDecifradas} não decifrada(s)`,
+        `${r.monitorados} grupo(s) monitorado(s) · ${r.flushesForcados} liberação(ões) forçada(s) da fila interna`,
+      ]
+      if (r.porChat.length > 0) {
+        linhas.push('De onde vieram: ' + r.porChat.map((c) => `${c.jid} (${c.n})`).join(', '))
+      }
+      if (r.mensagens > 0 && r.deGrupoMonitorado === 0 && r.proprias > 0) {
+        linhas.push('⚠ Chegou mensagem, mas nenhuma de grupo monitorado — e algumas eram suas. O app não captura o que você mesmo posta.')
+      }
+      setRecepcao(linhas)
+    } catch (error) {
+      setRecepcao(['Não consegui ler agora: ' + ((error as Error).message || 'erro desconhecido')])
+    } finally {
+      setLendoRecepcao(false)
+    }
+  }
 
   const varrerAgora = async () => {
     setVarrendo(true)
@@ -209,6 +238,27 @@ export default function Grupos() {
             </button>
           </div>
           {resultadoVarredura && <p className="text-xs text-muted-foreground mt-2">{resultadoVarredura}</p>}
+
+          <div className="mt-4 pt-3 border-t border-border">
+            <button
+              type="button"
+              onClick={verRecepcaoAgora}
+              disabled={lendoRecepcao}
+              className="px-4 py-2 rounded-lg bg-secondary hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed text-sm text-foreground transition-colors"
+            >
+              {lendoRecepcao ? 'Lendo...' : 'Ver recepção agora'}
+            </button>
+            <p className="text-xs text-muted-foreground mt-1">
+              Mostra na hora quantas mensagens chegaram e o que aconteceu com cada uma, sem esperar o relatório de 30 em 30 minutos.
+            </p>
+            {recepcao && (
+              <div className="mt-2 space-y-1">
+                {recepcao.map((l, i) => (
+                  <p key={i} className="text-xs text-muted-foreground font-mono-num break-all">{l}</p>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

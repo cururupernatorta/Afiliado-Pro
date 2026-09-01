@@ -599,6 +599,7 @@ const setupIpcHandlers = (): void => {
     // a trava de 6h que uma credencial inválida deixou armada.
     affiliateManager.resetarBloqueioAliExpress()
   })
+  ipcMain.handle('whatsapp:reception-now', () => whatsappManager.recepcaoAgora())
   ipcMain.handle('whatsapp:sweep-history', async (_, horas: number) => {
     return whatsappManager.varrerHistorico(Number(horas) || 1)
   })

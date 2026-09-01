@@ -42,6 +42,7 @@ export interface ElectronAPI {
   productDelete: (id: number) => Promise<void>
   productScrape: (url: string) => Promise<any>
   scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
+  whatsappReceptionNow: () => Promise<{ mensagens: number; deGrupoMonitorado: number; proprias: number; jaVistas: number; naoDecifradas: number; comTexto: number; comLink: number; flushesForcados: number; monitorados: number; porChat: { jid: string; n: number }[] }>
   whatsappSweepHistory: (horas: number) => Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number; semAncora?: boolean }>
 
   configGet: () => Promise<any>
@@ -126,6 +127,7 @@ const api: ElectronAPI = {
   productDelete: (id) => ipcRenderer.invoke('product:delete', id),
   productScrape: (url) => ipcRenderer.invoke('product:scrape', url),
   scrapeRunNow: () => ipcRenderer.invoke('scrape:run-now'),
+  whatsappReceptionNow: () => ipcRenderer.invoke('whatsapp:reception-now'),
   whatsappSweepHistory: (horas) => ipcRenderer.invoke('whatsapp:sweep-history', horas),
 
   configGet: () => ipcRenderer.invoke('config:get'),

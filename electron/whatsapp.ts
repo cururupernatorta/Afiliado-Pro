@@ -80,6 +80,10 @@ export class WhatsAppManager {
   // que terminou de mandar o acumulado. 15 segundos é margem larga pra isso.
   private readonly FLUSH_WATCHDOG_MS = 15 * 1000
   private avisouBufferTravado = false
+  // Um aviso por grupo por sessão — ver avisarMensagemPropriaIgnorada.
+  private avisouMensagemPropria = new Set<string>()
+  // Ate 3 amostras por chat - ver diagnosticarMensagemIlegivel.
+  private amostrasIlegiveis = new Map<string, number>()
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
 
@@ -97,6 +101,31 @@ export class WhatsAppManager {
   private iniciarRelatorioDeRecepcao(): void {
     if (this.relatorioTimer) return
     this.relatorioTimer = setInterval(() => this.reportarRecepcao(), this.RELATORIO_INTERVALO_MS)
+  }
+
+  /**
+   * Contadores da janela atual, sem esperar o relatório de 30 minutos. Numa
+   * sessão de teste ao vivo, esperar meia hora para saber se a mensagem chegou
+   * é a diferença entre ver e adivinhar.
+   */
+  recepcaoAgora(): {
+    mensagens: number; deGrupoMonitorado: number; proprias: number; jaVistas: number
+    naoDecifradas: number; comTexto: number; comLink: number; flushesForcados: number
+    monitorados: number; porChat: { jid: string; n: number }[]
+  } {
+    const r = this.recepcao
+    return {
+      mensagens: r.mensagens,
+      deGrupoMonitorado: r.deGrupoMonitorado,
+      proprias: r.proprias,
+      jaVistas: r.jaVistas,
+      naoDecifradas: r.semConteudo,
+      comTexto: r.comTexto,
+      comLink: r.comLink,
+      flushesForcados: r.flushesForcados,
+      monitorados: this.dbManager.getMonitoredGroups('whatsapp').length,
+      porChat: Object.entries(r.porChat).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([jid, n]) => ({ jid, n })),
+    }
   }
 
   private reportarRecepcao(): void {
@@ -296,6 +325,13 @@ monitorados_salvos=[${salvos}]`,
             const atual = this.ultimaMensagemPorGrupo.get(jid)
             if (!atual || messageTimestampMs(msg) < messageTimestampMs(atual)) {
               this.ultimaMensagemPorGrupo.set(jid, msg)
+              // Também no banco: a versão em memória zera a cada reinício, e é
+              // logo depois de uma atualização que a varredura mais importa.
+              try {
+                this.dbManager.salvarAncoraDeHistorico('whatsapp', jid, msg.key, messageTimestampMs(msg))
+              } catch (err) {
+                log.warn('Não consegui salvar a âncora de histórico:', (err as Error).message)
+              }
             }
           }
         }
@@ -790,10 +826,24 @@ monitorados_salvos=[${salvos}]`,
         const doBufferDoGrupo = this.historyBuffer.get(grupo.group_id) ?? []
         const candidatas = [...doBufferDoGrupo, this.ultimaMensagemPorGrupo.get(grupo.group_id)]
           .filter((m): m is proto.IWebMessageInfo => !!m && !!m.key && messageTimestampMs(m) > 0)
-        if (candidatas.length === 0) continue
-        const maisAntiga = candidatas.reduce((a, b) => (messageTimestampMs(a) <= messageTimestampMs(b) ? a : b))
-        const ts = messageTimestampMs(maisAntiga)
-        if (!maisAntiga.key || !ts) continue
+
+        let chave: proto.IMessageKey | undefined
+        let ts = 0
+        if (candidatas.length > 0) {
+          const maisAntiga = candidatas.reduce((a, b) => (messageTimestampMs(a) <= messageTimestampMs(b) ? a : b))
+          chave = maisAntiga.key ?? undefined
+          ts = messageTimestampMs(maisAntiga)
+        } else {
+          // Nada em memória — é o caso de logo depois de um reinício. A âncora
+          // salva no banco cobre exatamente esse buraco.
+          const salva = this.dbManager.getAncoraDeHistorico('whatsapp', grupo.group_id)
+          if (salva) {
+            chave = { remoteJid: grupo.group_id, id: salva.id, fromMe: salva.fromMe, participant: salva.participant }
+            ts = salva.ts
+          }
+        }
+        if (!chave || !ts) continue
+        const maisAntiga = { key: chave } as proto.IWebMessageInfo
         try {
           await buscar.call(this.sock, this.HISTORY_MAX_PER_GROUP, maisAntiga.key, Math.floor(ts / 1000))
           pedidos++
@@ -820,6 +870,36 @@ monitorados_salvos=[${salvos}]`,
     return { ok: true, processadas, pedidos, grupos: monitorados.length, semAncora }
   }
 
+  // Mensagem própria some em silêncio, e isso é correto: sem esse filtro o app
+  // capturaria os próprios anúncios que posta no grupo de destino e entraria em
+  // laço. Mas quando o usuário está TESTANDO — manda o link no grupo monitorado
+  // do próprio número e não acontece nada — o silêncio parece bug. Aconteceu de
+  // verdade e custou meia hora de investigação. Avisa uma vez por grupo por
+  // sessão, e só quando havia mesmo um link de loja: nada de encher o log com
+  // conversa normal.
+  private avisarMensagemPropriaIgnorada(msg: proto.IWebMessageInfo): void {
+    const jid = msg.key.remoteJid
+    if (!jid || this.avisouMensagemPropria.has(jid)) return
+    if (!this.dbManager.getMonitoredGroups('whatsapp').some((g) => g.group_id === jid)) return
+
+    const content = this.unwrapMessage(msg.message)
+    const texto = content?.conversation || content?.extendedTextMessage?.text ||
+                  content?.imageMessage?.caption || content?.videoMessage?.caption ||
+                  content?.documentMessage?.caption || ''
+    const urls = texto.match(/(https?:\/\/[^\s]+)/g)
+    if (!urls?.some((u) => this.scraperManager.affiliateManager?.detectStore(u))) return
+
+    this.avisouMensagemPropria.add(jid)
+    this.dbManager.addLog({
+      type: 'warning',
+      platform: 'whatsapp',
+      message: 'Mensagem sua ignorada — o app não captura o que você mesmo posta',
+      details: 'Você mandou um link de loja num grupo monitorado usando o próprio número conectado ao app. ' +
+        'Isso é ignorado de propósito: sem esse filtro o app capturaria os anúncios que ele mesmo publica e entraria em laço. ' +
+        'Para testar, peça a outra pessoa para mandar o link, ou use outro número.',
+    })
+  }
+
   private unwrapMessage(message: proto.IMessage | null | undefined): proto.IMessage | null | undefined {
     const inner = message?.ephemeralMessage?.message ||
                   message?.viewOnceMessage?.message ||
@@ -828,12 +908,60 @@ monitorados_salvos=[${salvos}]`,
     return inner ? this.unwrapMessage(inner) : message
   }
 
+  /**
+   * Registra a forma crua de uma mensagem que chegou ilegivel, para descobrir
+   * o que ela realmente e.
+   *
+   * Um canal de um testador entrega 100% das mensagens assim - 9/9, 16/16,
+   * 22/22, 26/26 em todas as janelas medidas - enquanto os outros dois canais
+   * dele decifram normalmente. Hoje so sabemos que `msg.message` vem nulo com
+   * `messageStubType` 2 (CIPHERTEXT). Isso pode ser criptografia de fato, ou um
+   * formato de canal que esta versao do Baileys nao sabe montar. Sao consertos
+   * completamente diferentes, e sem saber qual e a proxima tentativa seria
+   * chute - foi o que ja aconteceu duas vezes neste caso.
+   *
+   * Tres amostras por chat por sessao: o suficiente para ver o padrao, sem
+   * transformar o log em despejo.
+   */
+  private diagnosticarMensagemIlegivel(msg: proto.IWebMessageInfo): void {
+    const jid = msg.key.remoteJid
+    if (!jid) return
+    if (!this.dbManager.getMonitoredGroups('whatsapp').some((g) => g.group_id === jid)) return
+
+    const vistas = this.amostrasIlegiveis.get(jid) ?? 0
+    if (vistas >= 3) return
+    this.amostrasIlegiveis.set(jid, vistas + 1)
+
+    const semValorNulo = (o: unknown): string[] =>
+      o && typeof o === 'object' ? Object.entries(o as Record<string, unknown>).filter(([, v]) => v != null).map(([k]) => k) : []
+
+    this.dbManager.addLog({
+      type: 'info',
+      platform: 'whatsapp',
+      message: 'Diagnostico: mensagem ilegivel de canal monitorado',
+      details: [
+        'chat=' + jid,
+        'stubType=' + String(msg.messageStubType ?? '-'),
+        'stubParams=' + String(msg.messageStubParameters?.length ?? 0),
+        'campos_da_mensagem=[' + semValorNulo(msg).join(',') + ']',
+        'campos_da_chave=[' + semValorNulo(msg.key).join(',') + ']',
+        'status=' + String(msg.status ?? '-'),
+        'temParticipant=' + String(!!msg.key.participant),
+        'amostra=' + String(vistas + 1) + '/3',
+      ].join(' | '),
+    })
+  }
+
   private async handleIncomingMessage(msg: proto.IWebMessageInfo): Promise<void> {
     // Mensagem própria saía por um return mudo e ficava indistinguível de
     // "chegou e o texto estava vazio" no relatório — foi o que aconteceu no log
     // do testador: 8 mensagens passando o filtro e com_texto=0 E sem_texto=0
     // ao mesmo tempo, que só é possível se todas saíram aqui.
-    if (msg.key.fromMe) { this.recepcao.proprias++; return }
+    if (msg.key.fromMe) {
+      this.recepcao.proprias++
+      this.avisarMensagemPropriaIgnorada(msg)
+      return
+    }
 
     // A cada reconexão o WhatsApp reentrega o acumulado, e o buffer liberado
     // pelo watchdog traz o MESMO lote de novo. No log do testador, os mesmos
@@ -860,6 +988,7 @@ monitorados_salvos=[${salvos}]`,
         const nome = String(msg.messageStubType)
         this.recepcao.stubs[nome] = (this.recepcao.stubs[nome] ?? 0) + 1
       }
+      this.diagnosticarMensagemIlegivel(msg)
       return
     }
     // Grupo grande de ofertas costuma ter mensagens temporárias ativadas —
@@ -928,15 +1057,33 @@ monitorados_salvos=[${salvos}]`,
     await Promise.all(urls.map((url) => this.processDetectedUrl(url)))
   }
 
-  private async processDetectedUrl(url: string): Promise<void> {
+  private async processDetectedUrl(url: string, viaAgregador = false): Promise<void> {
     const store = this.scraperManager.affiliateManager?.detectStore(url)
     if (!store) {
-      // Isso só roda pra link vindo de grupo já marcado como monitorado (o
-      // usuário escolheu esse grupo de propósito pra capturar ofertas), então
-      // não é dado sensível de grupo aleatório — mas antes retornava aqui sem
-      // nenhum rastro, e um link de loja não suportada (ou um encurtador que
-      // o detectStore não reconhece) desaparecia sem deixar pista nenhuma.
-      log.warn(`Link de grupo monitorado ignorado - loja não reconhecida: ${url}`)
+      // Antes o link morria aqui. Só que grupo agregador manda o encurtador
+      // DELE, não o link da loja: medido num caso real, 38 links numa única
+      // janela, todos descartados. A página do agregador tem um botão que
+      // aponta para a loja (no caso, o `meli.la` de afiliado deles), e daí o
+      // resolvedor que já existe chega ao produto canônico — de onde o app
+      // gera o link de afiliado DO USUÁRIO. O produto é o mesmo; a comissão
+      // passa a ser dele.
+      //
+      // `viaAgregador` corta a recursão: a página resolvida é seguida uma vez
+      // só, senão um agregador que aponta para outro entraria em laço.
+      if (!viaAgregador) {
+        const daLoja = await this.scraperManager.resolverLinkDeAgregador(url)
+        if (daLoja) {
+          this.dbManager.addLog({
+            type: 'info',
+            platform: 'whatsapp',
+            message: 'Link de agregador resolvido para a loja',
+            details: `${url.substring(0, 70)} -> ${daLoja.substring(0, 90)}`,
+          })
+          await this.processDetectedUrl(daLoja, true)
+          return
+        }
+      }
+      log.warn(`Link de grupo monitorado ignorado - loja nao reconhecida: ${url}`)
       this.dbManager.addLog({
         type: 'warning',
         platform: 'whatsapp',
