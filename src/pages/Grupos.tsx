@@ -23,6 +23,9 @@ export default function Grupos() {
   const [activeTab, setActiveTab] = useState<'whatsapp' | 'telegram'>('whatsapp')
   const [channelInput, setChannelInput] = useState('')
   const [addingChannel, setAddingChannel] = useState(false)
+  const [horasVarredura, setHorasVarredura] = useState(3)
+  const [varrendo, setVarrendo] = useState(false)
+  const [resultadoVarredura, setResultadoVarredura] = useState('')
 
   const loadGroups = async () => {
     setLoading(true)
@@ -107,6 +110,28 @@ export default function Grupos() {
 
   const filteredGroups = groups.filter((g) => g.platform === activeTab)
 
+  const varrerAgora = async () => {
+    setVarrendo(true)
+    setResultadoVarredura('')
+    try {
+      const r = await window.electronAPI.whatsappSweepHistory(horasVarredura)
+      if (!r.ok) {
+        setResultadoVarredura(r.erro || 'Não foi possível varrer agora.')
+      } else {
+        const partes = [`${r.processadas} mensagem(ns) reprocessada(s) de ${r.grupos} grupo(s)`]
+        if (r.pedidos > 0) {
+          partes.push(`${r.pedidos} pedido(s) de histórico enviado(s) ao WhatsApp — o que chegar é capturado em segundo plano`)
+        }
+        partes.push('ofertas já capturadas antes foram ignoradas')
+        setResultadoVarredura(partes.join('. ') + '.')
+      }
+    } catch (error) {
+      setResultadoVarredura('Erro na varredura: ' + ((error as Error).message || 'erro desconhecido'))
+    } finally {
+      setVarrendo(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Tabs */}
@@ -142,6 +167,43 @@ export default function Grupos() {
           Atualizar
         </button>
       </div>
+
+      {/* Varredura manual: o WhatsApp nem sempre entrega sozinho o que passou
+          durante uma queda de conexão, e sem isso essas ofertas se perdem. */}
+      {activeTab === 'whatsapp' && (
+        <div className="ticket-card p-4">
+          <p className="text-sm font-medium text-foreground mb-1 flex items-center gap-2">
+            <RefreshCw className="w-4 h-4 text-green-400" />
+            Buscar anúncios que passaram
+          </p>
+          <p className="text-xs text-muted-foreground mb-3">
+            Revarre os grupos monitorados atrás de ofertas que o app não capturou — por exemplo, enquanto o WhatsApp esteve desconectado. O que já foi capturado antes é ignorado, então não gera anúncio repetido.
+          </p>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min="1"
+              max="10"
+              step="1"
+              value={horasVarredura}
+              onChange={(e) => setHorasVarredura(parseInt(e.target.value))}
+              className="flex-1 h-2 rounded-lg bg-secondary appearance-none cursor-pointer accent-primary"
+            />
+            <span className="text-sm font-mono text-foreground w-20 text-right">
+              {horasVarredura}h atrás
+            </span>
+            <button
+              type="button"
+              onClick={varrerAgora}
+              disabled={varrendo}
+              className="px-4 py-2 rounded-lg bg-secondary hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed text-sm text-foreground transition-colors whitespace-nowrap"
+            >
+              {varrendo ? 'Varrendo...' : 'Varrer agora'}
+            </button>
+          </div>
+          {resultadoVarredura && <p className="text-xs text-muted-foreground mt-2">{resultadoVarredura}</p>}
+        </div>
+      )}
 
       {/* Adicionar canal de transmissão (só WhatsApp — Telegram já lista canais junto com os grupos) */}
       {activeTab === 'whatsapp' && (

@@ -106,6 +106,23 @@ export interface LogEntry {
   created_at?: string
 }
 
+/**
+ * Chave de comparação de produto: a URL sem query nem âncora.
+ *
+ * A página de ofertas do Mercado Livre devolve o mesmo produto com um
+ * `deal_print_id` diferente A CADA CARREGAMENTO — medido: duas buscas com 4
+ * segundos de intervalo trouxeram os mesmos 42 produtos e ZERO URLs iguais.
+ * Comparando a URL inteira, cada busca criava 42 "produtos novos" e repostava
+ * todos, o que na prática enchia o grupo de anúncios repetidos.
+ *
+ * Só a parte antes de `?` e `#` identifica o produto: em todas as lojas que o
+ * app trata, o identificador está no caminho (`/p/MLB...`, `/item/123.html`,
+ * `-i.shop.item`, `/dp/ASIN`), e o resto é rastreio.
+ */
+export function urlBaseDoProduto(url: string): string {
+  return String(url || '').split('#')[0].split('?')[0]
+}
+
 export class DatabaseManager extends EventEmitter {
   private db: Database.Database
 
@@ -450,7 +467,13 @@ export class DatabaseManager extends EventEmitter {
   }
 
   productExistsByUrl(url: string): boolean {
-    const row = this.db.prepare('SELECT 1 FROM products WHERE original_url = ?').get(url)
+    // Compara pela URL base, mas sem juntar produtos diferentes por engano:
+    // um `LIKE base || '%'` solto casaria MLB66637233 com MLB666372339. Por
+    // isso os curingas exigem o `?` ou o `#` logo depois da base.
+    const base = urlBaseDoProduto(url)
+    const row = this.db
+      .prepare('SELECT 1 FROM products WHERE original_url = ? OR original_url LIKE ? OR original_url LIKE ?')
+      .get(base, base + '?%', base + '#%')
     return !!row
   }
 
@@ -482,7 +505,9 @@ export class DatabaseManager extends EventEmitter {
       product.image_url ?? null,
       product.image_path ?? null,
       product.description ?? null,
-      product.original_url,
+      // Grava já sem o rastreio: o produto é o mesmo, e assim as comparações
+      // futuras batem direto, sem depender dos curingas acima.
+      urlBaseDoProduto(product.original_url),
       product.affiliate_url ?? null,
       product.pix_price ?? null,
       product.coupon_url ?? null,

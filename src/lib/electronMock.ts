@@ -41,6 +41,7 @@ export function installElectronMockIfNeeded() {
     productDelete: async () => {},
     productScrape: async () => ({ title: 'Produto de exemplo', price: 99.9, store: 'shopee', original_url: '' }),
     scrapeRunNow: async () => ({ ok: true, novas: 0 }),
+    whatsappSweepHistory: async () => ({ ok: true, processadas: 0, pedidos: 0, grupos: 1 }),
 
     configGet: async () => ({}),
     configSave: async () => {},

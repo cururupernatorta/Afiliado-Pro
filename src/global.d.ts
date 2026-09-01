@@ -34,6 +34,7 @@ export interface ElectronAPI {
   productDelete: (id: number) => Promise<void>
   productScrape: (url: string) => Promise<any>
   scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
+  whatsappSweepHistory: (horas: number) => Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number }>
 
   // Config
   configGet: () => Promise<any>

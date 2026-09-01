@@ -9,7 +9,7 @@ import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
 import { sendToRenderer, ErroDeConexao } from './utils'
 import { autoRepostProduct } from './messageHelper'
-import { bufferMessages, selectRecoverableMessages, trimProcessedIds } from './historyRecovery'
+import { bufferMessages, messageTimestampMs, selectRecoverableMessages, trimProcessedIds } from './historyRecovery'
 
 export class WhatsAppManager {
   private dbManager: DatabaseManager
@@ -39,6 +39,11 @@ export class WhatsAppManager {
   private readonly HISTORY_MAX_AGE_MS = 12 * 60 * 60 * 1000
   private readonly HISTORY_MAX_PER_GROUP = 30
   private readonly PROCESSED_IDS_CAP = 5000
+  private varreduraJanelaMs = 0
+  private varreduraValidaAte = 0
+  // O histórico pedido chega em segundos, mas a folga evita que uma resposta
+  // atrasada seja processada com a janela padrão em vez da escolhida.
+  private readonly VARREDURA_VALIDADE_MS = 2 * 60 * 1000
 
   // Diagnóstico de recepção. Quando o tester diz "parou de capturar", o log
   // não distinguia as causas possíveis: mensagem nenhuma chegando, mensagem
@@ -551,13 +556,33 @@ monitorados_salvos=[${salvos}]`,
     if (!this.sock || this.status !== 'connected') {
       throw new ErroDeConexao('WhatsApp nao esta conectado')
     }
-    if (imagePath) {
-      await this.sock.sendMessage(groupId, {
-        image: { url: imagePath },
-        caption: message,
-      })
-    } else {
-      await this.sock.sendMessage(groupId, { text: message })
+    try {
+      if (imagePath) {
+        await this.sock.sendMessage(groupId, {
+          image: { url: imagePath },
+          caption: message,
+        })
+      } else {
+        await this.sock.sendMessage(groupId, { text: message })
+      }
+    } catch (err) {
+      // O Baileys devolve um "forbidden" seco quando o servidor recusa o envio
+      // com 403, e isso ia pro log do usuário exatamente assim — uma palavra,
+      // sem dizer nem em qual grupo nem o que fazer. Aconteceu de verdade: um
+      // testador reparou o WhatsApp com OUTRA conta depois de perder a sessão,
+      // e o grupo de destino salvo continuou sendo o da conta antiga, onde a
+      // nova não está. Quatro ofertas morreram com "forbidden" e nenhuma pista.
+      const bruto = (err as Error)?.message || ''
+      const status = (err as { output?: { statusCode?: number } })?.output?.statusCode
+      if (/forbidden/i.test(bruto) || status === 403) {
+        throw new Error(
+          `O WhatsApp recusou o envio para ${groupId}. Normalmente é um destes: a conta conectada não é mais membro desse grupo ` +
+          '(acontece depois de parear o WhatsApp com outro número — o grupo salvo continua sendo o de antes), ' +
+          'o grupo está configurado para só administradores enviarem, ou o destino é um canal que não é seu. ' +
+          'Confira os grupos de destino em Configurações e selecione de novo.'
+        )
+      }
+      throw err
     }
   }
 
@@ -571,8 +596,9 @@ monitorados_salvos=[${salvos}]`,
   // capturado (nem repostado) de novo.
   private async recoverMonitoredFromHistory(
     messages: proto.IWebMessageInfo[],
-    reason: string
-  ): Promise<void> {
+    reason: string,
+    janelaMs?: number
+  ): Promise<number> {
     const monitoredIds = new Set(
       this.dbManager.getMonitoredGroups('whatsapp').map((g) => g.group_id)
     )
@@ -580,7 +606,7 @@ monitorados_salvos=[${salvos}]`,
     const toProcess = selectRecoverableMessages(messages, {
       monitoredIds,
       alreadyProcessedIds: this.processedHistoryIds,
-      maxAgeMs: this.HISTORY_MAX_AGE_MS,
+      maxAgeMs: janelaMs ?? this.janelaAtiva(),
       maxPerGroup: this.HISTORY_MAX_PER_GROUP,
     })
 
@@ -589,7 +615,7 @@ monitorados_salvos=[${salvos}]`,
     }
     trimProcessedIds(this.processedHistoryIds, this.PROCESSED_IDS_CAP)
 
-    if (toProcess.length === 0) return
+    if (toProcess.length === 0) return 0
 
     log.info(`Recuperando ${toProcess.length} mensagem(ns) do histórico do WhatsApp (${reason})`)
     this.dbManager.addLog({
@@ -606,6 +632,75 @@ monitorados_salvos=[${salvos}]`,
     for (const msg of toProcess) {
       await this.handleIncomingMessage(msg)
     }
+    return toProcess.length
+  }
+
+  // Enquanto uma varredura manual está correndo, o histórico que o WhatsApp
+  // entregar em resposta ao nosso pedido precisa usar a janela que o usuário
+  // escolheu — senão o pedido traz 8 horas e o processamento descarta tudo que
+  // for mais velho que as 12h padrão... ou, pior, no sentido contrário: o
+  // usuário pede 2 horas e recebe 12.
+  private janelaAtiva(): number {
+    if (this.varreduraJanelaMs && Date.now() < this.varreduraValidaAte) {
+      return this.varreduraJanelaMs
+    }
+    return this.HISTORY_MAX_AGE_MS
+  }
+
+  /**
+   * Varredura manual: reprocessa o que passou nos grupos monitorados nas
+   * últimas N horas. Faz duas coisas, porque nenhuma sozinha é confiável —
+   * o buffer só tem o que o WhatsApp mandou espontaneamente, e o pedido
+   * explícito depende de o servidor responder (e a resposta chega depois,
+   * pelo mesmo `messaging-history.set` de sempre).
+   */
+  async varrerHistorico(horas: number): Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number }> {
+    if (this.status !== 'connected' || !this.sock) {
+      return { ok: false, erro: 'O WhatsApp não está conectado.', processadas: 0, pedidos: 0, grupos: 0 }
+    }
+    const monitorados = this.dbManager.getMonitoredGroups('whatsapp')
+    if (monitorados.length === 0) {
+      return { ok: false, erro: 'Nenhum grupo ou canal está marcado como monitorado.', processadas: 0, pedidos: 0, grupos: 0 }
+    }
+
+    const janelaMs = Math.max(1, Math.min(10, Math.round(horas))) * 60 * 60 * 1000
+    this.varreduraJanelaMs = janelaMs
+    this.varreduraValidaAte = Date.now() + this.VARREDURA_VALIDADE_MS
+
+    this.dbManager.addLog({
+      type: 'info',
+      platform: 'whatsapp',
+      message: `Varredura manual iniciada — procurando anúncios das últimas ${Math.round(janelaMs / 3600000)}h`,
+      details: `${monitorados.length} grupo(s)/canal(is) monitorado(s). Ofertas já capturadas são ignoradas.`,
+    })
+
+    // 1) O que já está no buffer, agora com a janela escolhida.
+    const doBuffer = [...this.historyBuffer.values()].flat()
+    const processadas = await this.recoverMonitoredFromHistory(doBuffer, `varredura manual de ${Math.round(janelaMs / 3600000)}h`, janelaMs)
+
+    // 2) Pede ao WhatsApp o que veio antes da mensagem mais antiga que temos de
+    //    cada grupo. A resposta não é imediata: chega depois pelo listener.
+    let pedidos = 0
+    const buscar = (this.sock as unknown as {
+      fetchMessageHistory?: (count: number, key: proto.IMessageKey, ts: number) => Promise<string>
+    }).fetchMessageHistory
+    if (typeof buscar === 'function') {
+      for (const grupo of monitorados) {
+        const doGrupo = this.historyBuffer.get(grupo.group_id)
+        if (!doGrupo || doGrupo.length === 0) continue
+        const maisAntiga = doGrupo.reduce((a, b) => (messageTimestampMs(a) <= messageTimestampMs(b) ? a : b))
+        const ts = messageTimestampMs(maisAntiga)
+        if (!maisAntiga.key || !ts) continue
+        try {
+          await buscar.call(this.sock, this.HISTORY_MAX_PER_GROUP, maisAntiga.key, Math.floor(ts / 1000))
+          pedidos++
+        } catch (err) {
+          log.warn(`Não consegui pedir histórico de ${grupo.group_id}:`, (err as Error).message)
+        }
+      }
+    }
+
+    return { ok: true, processadas, pedidos, grupos: monitorados.length }
   }
 
   private unwrapMessage(message: proto.IMessage | null | undefined): proto.IMessage | null | undefined {
