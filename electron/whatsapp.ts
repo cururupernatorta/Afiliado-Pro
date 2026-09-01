@@ -48,6 +48,8 @@ export class WhatsAppManager {
     lotes: 0,
     mensagens: 0,
     porTipo: {} as Record<string, number>,
+    porChat: {} as Record<string, number>,
+    flushesForcados: 0,
     aposFiltroDeTipo: 0,
     semConteudo: 0,
     stubs: {} as Record<string, number>,
@@ -56,6 +58,11 @@ export class WhatsAppManager {
     deGrupoMonitorado: 0,
     comLink: 0,
   }
+  private flushWatchdog: NodeJS.Timeout | null = null
+  // O Baileys libera o buffer sozinho em 1-2 segundos quando o servidor avisa
+  // que terminou de mandar o acumulado. 15 segundos é margem larga pra isso.
+  private readonly FLUSH_WATCHDOG_MS = 15 * 1000
+  private avisouBufferTravado = false
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
 
@@ -79,6 +86,12 @@ export class WhatsAppManager {
     const r = this.recepcao
     const tipos = Object.entries(r.porTipo).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'
     const monitorados = this.dbManager.getMonitoredGroups('whatsapp')
+    const chats = Object.entries(r.porChat)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([jid, n]) => `${jid}=${n}`)
+      .join(', ') || 'nenhum'
+    const salvos = monitorados.map((g) => g.group_id).join(', ') || 'nenhum'
 
     this.dbManager.addLog({
       // Receber zero mensagem por 30 minutos com N grupos monitorados é o
@@ -88,10 +101,12 @@ export class WhatsAppManager {
       message: r.mensagens === 0 && monitorados.length > 0
         ? `Nenhuma mensagem recebida do WhatsApp nos últimos 30 min (${monitorados.length} grupo(s)/canal(is) monitorado(s))`
         : `Recepção do WhatsApp nos últimos 30 min: ${r.mensagens} mensagem(ns), ${r.deGrupoMonitorado} de grupo monitorado`,
-      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}`,
+      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
+chats_que_mandaram=[${chats}]
+monitorados_salvos=[${salvos}]`,
     })
 
-    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
   }
 
   async connect(): Promise<void> {
@@ -122,6 +137,8 @@ export class WhatsAppManager {
         syncFullHistory: false,
         markOnlineOnConnect: false,
       })
+
+      this.iniciarWatchdogDeBuffer()
 
       this.sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
@@ -221,6 +238,13 @@ export class WhatsAppManager {
         this.recepcao.lotes++
         this.recepcao.mensagens += m.messages.length
         this.recepcao.porTipo[m.type] = (this.recepcao.porTipo[m.type] ?? 0) + 1
+        // De QUAIS chats veio. Sem isso, "chegaram 40 mensagens e nenhuma de
+        // grupo monitorado" não diz se o grupo certo está calado ou se o JID
+        // que chega é diferente do que está salvo — que são problemas opostos.
+        for (const msg of m.messages) {
+          const jid = msg.key.remoteJid || 'sem-jid'
+          this.recepcao.porChat[jid] = (this.recepcao.porChat[jid] ?? 0) + 1
+        }
 
         const messages = m.type === 'notify'
           ? m.messages
@@ -247,7 +271,51 @@ export class WhatsAppManager {
     }
   }
 
+  // O Baileys põe o emissor em modo BUFFER em toda conexão (socket.js chama
+  // ev.buffer() num process.nextTick assim que há credencial salva) e só libera
+  // quando o servidor manda o nó `ib,,offline` dizendo que terminou de entregar
+  // o acumulado. `messages.upsert` está na lista de eventos bufferáveis;
+  // `connection.update` NÃO está.
+  //
+  // Quando esse nó não chega, o resultado é exatamente o que apareceu no log do
+  // testador: o app loga "Monitorando 5 grupos" a cada reconexão, a conexão
+  // parece perfeita, e nenhuma mensagem chega NUNCA — lotes=0 por 18 horas
+  // seguidas. Fica tudo preso no buffer até o socket morrer, e aí se perde.
+  //
+  // Não temos como fazer o servidor mandar o nó que falta, então liberamos o
+  // buffer por conta própria quando ele passa do tempo razoável.
+  private iniciarWatchdogDeBuffer(): void {
+    if (this.flushWatchdog) clearInterval(this.flushWatchdog)
+    this.avisouBufferTravado = false
+    this.flushWatchdog = setInterval(() => {
+      const ev = this.sock?.ev as unknown as {
+        isBuffering?: () => boolean
+        flush?: () => boolean
+      } | undefined
+      // Versão do Baileys sem essas funções: não há o que fazer, e tentar
+      // seria pior que não fazer nada.
+      if (typeof ev?.isBuffering !== 'function' || typeof ev.flush !== 'function') return
+      if (!ev.isBuffering()) return
+
+      ev.flush()
+      this.recepcao.flushesForcados++
+      log.warn('Buffer de eventos do Baileys estava travado — liberado manualmente')
+
+      // Uma linha por conexão, não uma a cada 15 segundos.
+      if (!this.avisouBufferTravado) {
+        this.avisouBufferTravado = true
+        this.dbManager.addLog({
+          type: 'warning',
+          platform: 'whatsapp',
+          message: 'Mensagens estavam presas na fila interna do WhatsApp — liberadas automaticamente',
+          details: 'O servidor do WhatsApp não avisou que terminou de entregar o acumulado, e sem esse aviso nenhuma mensagem chegava ao app. Liberado por conta própria; a captura continua normalmente.',
+        })
+      }
+    }, this.FLUSH_WATCHDOG_MS)
+  }
+
   private encerrarSocketAnterior(): void {
+    if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
     if (!this.sock) return
     const antigo = this.sock
     this.sock = null
@@ -293,6 +361,7 @@ export class WhatsAppManager {
   // o programa.
   closeConnection(): void {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
+    if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
     if (this.sock) {
       try {
         this.sock.end(undefined)
