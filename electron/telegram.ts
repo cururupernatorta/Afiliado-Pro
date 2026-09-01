@@ -6,7 +6,7 @@ import log from 'electron-log'
 import { DatabaseManager } from './database'
 import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
-import { sendToRenderer } from './utils'
+import { sendToRenderer, ErroDeConexao } from './utils'
 import { autoRepostProduct } from './messageHelper'
 
 const API_ID = 2040
@@ -176,7 +176,7 @@ export class TelegramManager {
 
   async sendProducts(groupIds: string[], productIds: number[], extra?: SendProductsExtra): Promise<void> {
     if (!this.client || this.status !== 'connected') {
-      throw new Error('Telegram nao esta conectado')
+      throw new ErroDeConexao('Telegram nao esta conectado')
     }
     const config = this.dbManager.getConfig()
     const products = productIds.map((id) => this.dbManager.getProductById(id)).filter(Boolean)
@@ -206,7 +206,7 @@ export class TelegramManager {
 
   async sendMessage(groupId: string, message: string, imagePath?: string): Promise<void> {
     if (!this.client || this.status !== 'connected') {
-      throw new Error('Telegram nao esta conectado')
+      throw new ErroDeConexao('Telegram nao esta conectado')
     }
     if (imagePath) {
       await this.client.sendFile(groupId, {

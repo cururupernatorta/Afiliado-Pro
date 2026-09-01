@@ -7,7 +7,7 @@ import log from 'electron-log'
 import { DatabaseManager } from './database'
 import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
-import { sendToRenderer } from './utils'
+import { sendToRenderer, ErroDeConexao } from './utils'
 import { autoRepostProduct } from './messageHelper'
 import { bufferMessages, selectRecoverableMessages, trimProcessedIds } from './historyRecovery'
 
@@ -463,7 +463,7 @@ monitorados_salvos=[${salvos}]`,
   // monitorado, já que o propósito de adicionar é justamente capturar ofertas.
   async addChannel(inviteLinkOrCode: string): Promise<{ id: string; name: string }> {
     if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp não está conectado')
+      throw new ErroDeConexao('WhatsApp não está conectado')
     }
 
     const code = inviteLinkOrCode.trim().split('/').pop()?.split('?')[0]
@@ -519,7 +519,7 @@ monitorados_salvos=[${salvos}]`,
 
   async sendProducts(groupIds: string[], productIds: number[], extra?: SendProductsExtra): Promise<void> {
     if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp não está conectado')
+      throw new ErroDeConexao('WhatsApp não está conectado')
     }
     const config = this.dbManager.getConfig()
     const products = productIds.map((id) => this.dbManager.getProductById(id)).filter(Boolean)
@@ -549,7 +549,7 @@ monitorados_salvos=[${salvos}]`,
 
   async sendMessage(groupId: string, message: string, imagePath?: string): Promise<void> {
     if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp nao esta conectado')
+      throw new ErroDeConexao('WhatsApp nao esta conectado')
     }
     if (imagePath) {
       await this.sock.sendMessage(groupId, {

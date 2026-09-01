@@ -1,7 +1,7 @@
 import { Queue, Worker, Job } from 'bullmq'
 import IORedis from 'ioredis'
 import log from 'electron-log'
-import { sendToRenderer } from './utils'
+import { sendToRenderer, ErroDeConexao } from './utils'
 import { DatabaseManager } from './database'
 
 export interface SendProductsExtra {
@@ -35,9 +35,19 @@ interface InMemoryJob {
   status: 'waiting' | 'active' | 'completed' | 'failed' | 'rescheduled'
   createdAt: Date
   delayMs: number
+  // Quantas vezes esse envio já esbarrou em conexão fora do ar.
+  tentativasDeConexao?: number
 }
 
 export class QueueManager {
+  // Intervalo fixo e curto em vez de espera exponencial: a checagem de conexão
+  // é local (o envio nem chega a tocar a rede quando o socket está fora), então
+  // tentar de novo não custa nada — e oferta é perecível. Com espera dobrando,
+  // uma queda de 100 segundos empurrava o envio para mais de 3 minutos depois.
+  private readonly RETENTATIVA_CONEXAO_MS = 20_000
+  // 60 x 20s = 20 minutos de tolerância, que cobre com folga as quedas de
+  // reconexão vistas nos logs reais.
+  private readonly MAX_TENTATIVAS_DE_CONEXAO = 60
   private redis: IORedis | null = null
   private queue: Queue | null = null
   private worker: Worker | null = null
@@ -173,6 +183,30 @@ export class QueueManager {
         // job daí em diante, silenciosamente, pro resto da sessão do app. Os logs
         // de "Auto-repost: ... enviado" (que na verdade só significam "enfileirado")
         // continuavam aparecendo normalmente, escondendo que nada mais saía de fato.
+        // Conexão fora do ar não é envio com defeito: é envio que ainda não pôde
+        // acontecer. Marcar 'failed' descartava a oferta em silêncio — ela era
+        // encontrada, virava anúncio, entrava na fila e sumia, porque o WhatsApp
+        // dos testadores cai a cada 30-90 minutos. Reagenda e tenta de novo.
+        const tentativas = (job.tentativasDeConexao ?? 0) + 1
+        if (err instanceof ErroDeConexao && tentativas <= this.MAX_TENTATIVAS_DE_CONEXAO) {
+          job.tentativasDeConexao = tentativas
+          job.status = 'waiting'
+          job.delayMs = this.RETENTATIVA_CONEXAO_MS
+          log.warn(`Envio adiado (${job.data.platform} fora do ar), tentativa ${tentativas}/${this.MAX_TENTATIVAS_DE_CONEXAO} em ${job.delayMs / 1000}s`)
+          if (tentativas === 1 && this.dbManager) {
+            // Uma linha só, na primeira vez: o objetivo é o usuário saber que a
+            // oferta não se perdeu, não encher o log a cada nova tentativa.
+            this.dbManager.addLog({
+              type: 'warning',
+              platform: job.data.platform,
+              message: `Envio adiado — ${job.data.platform === 'whatsapp' ? 'WhatsApp' : 'Telegram'} fora do ar: ${job.data.productTitle.substring(0, 40)}`,
+              details: 'A oferta continua na fila e será enviada assim que a conexão voltar.',
+            })
+          }
+          sendToRenderer('queue:update', await this.getJobs())
+          continue
+        }
+
         job.status = 'failed'
         log.error('Job da fila em memória falhou:', err)
         try {
@@ -181,7 +215,9 @@ export class QueueManager {
               type: 'error',
               platform: job.data.platform,
               message: `Falha no envio: ${job.data.productTitle.substring(0, 50)}...`,
-              details: (err as Error).message,
+              details: err instanceof ErroDeConexao
+                ? `${(err as Error).message} — desisti depois de ${this.MAX_TENTATIVAS_DE_CONEXAO} tentativas ao longo de ${Math.round(this.MAX_TENTATIVAS_DE_CONEXAO * this.RETENTATIVA_CONEXAO_MS / 60000)} minutos.`
+                : (err as Error).message,
             })
           }
         } catch (logErr) {

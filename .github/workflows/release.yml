@@ -82,10 +82,38 @@ jobs:
             git push origin "$TAG"
           fi
 
-      - name: Publicar instalador como GitHub Release
+      # NÃO usar "--publish always". O electron-builder sobe os arquivos em
+      # paralelo e cada upload cria a release por conta própria se ela ainda não
+      # existir. No log de três releases seguidas apareceu
+      # "creating GitHub release  reason=release doesn't exist" DUAS vezes no
+      # mesmo milissegundo: as duas chamadas corriam juntas, uma perdia, e o
+      # upload dela morria em silêncio — com o processo saindo com código 0.
+      # Sobrava só o .blockmap, que por ser pequeno ganhava a corrida.
+      - name: Empacotar instalador (sem publicar)
+        run: npx electron-builder --win --publish never
+
+      - name: Conferir os arquivos gerados
+        shell: bash
+        run: |
+          ls -la release/
+          VERSION=$(node -p "require('./package.json').version")
+          test -f "release/latest.yml" || { echo "::error::electron-builder não gerou release/latest.yml"; exit 1; }
+          test -f "release/Afiliado-Pro-Setup-$VERSION.exe" || { echo "::error::instalador não encontrado em release/"; exit 1; }
+
+      # Upload explícito e sequencial. gh release upload é síncrono e falha com
+      # erro de verdade — ao contrário do publisher do electron-builder, que
+      # engolia a falha.
+      - name: Publicar release e enviar os arquivos
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish always
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$VERSION" --notes "Atualização automática do Afiliado Pro."
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber             "release/Afiliado-Pro-Setup-$VERSION.exe"             "release/Afiliado-Pro-Setup-$VERSION.exe.blockmap"             "release/latest.yml"
 
       # electron-builder pode terminar com exit code 0 mesmo se um upload de asset
       # falhar no meio do caminho (já aconteceu: só o .blockmap subiu, sem o .exe
