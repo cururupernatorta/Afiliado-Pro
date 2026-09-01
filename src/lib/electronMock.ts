@@ -35,6 +35,7 @@ export function installElectronMockIfNeeded() {
     onMercadoLivreStatus: noop,
 
     productGetAll: async () => [],
+    statsGet: async () => ({ produtos: 0, enviosHoje: 0, gruposMonitorados: 0, capturados: 0, porLoja: [] }),
     productGetById: async () => null,
     productCreate: async (data: any) => ({ id: Date.now(), created_at: new Date().toISOString(), ...data }),
     productUpdate: async () => {},

@@ -39,6 +39,13 @@ export class WhatsAppManager {
   private readonly HISTORY_MAX_AGE_MS = 12 * 60 * 60 * 1000
   private readonly HISTORY_MAX_PER_GROUP = 30
   private readonly PROCESSED_IDS_CAP = 5000
+  // Última mensagem vista de cada grupo, em tempo real. É a âncora que o
+  // `fetchMessageHistory` exige, e precisa vir daqui: a versão anterior da
+  // varredura usava o `historyBuffer`, que só o `messaging-history.set`
+  // preenche — e esse evento nunca dispara nas máquinas dos testadores. Sem
+  // âncora, a varredura não tinha o que reprocessar nem o que pedir, e ainda
+  // respondia "0 mensagens", que soa como "não havia nada perdido".
+  private ultimaMensagemPorGrupo = new Map<string, proto.IWebMessageInfo>()
   private varreduraJanelaMs = 0
   private varreduraValidaAte = 0
   // O histórico pedido chega em segundos, mas a folga evita que uma resposta
@@ -145,6 +152,14 @@ monitorados_salvos=[${salvos}]`,
         browser: ['Afiliado Pro', 'Desktop', '1.0'],
         syncFullHistory: false,
         markOnlineOnConnect: false,
+        // Quando o Baileys não consegue decifrar, ele pede reenvio ao
+        // remetente. O padrão é 250 ms, e no log de um testador 25 de 29
+        // mensagens chegaram como CIPHERTEXT (não decifradas) mesmo com as 5
+        // tentativas padrão — 250 ms pode ser cedo demais para o outro lado
+        // responder. Vale medir: o campo `nao_decifradas` do relatório de
+        // recepção diz se ajudou.
+        retryRequestDelayMs: 3000,
+        maxMsgRetryCount: 8,
       })
 
       this.iniciarWatchdogDeBuffer()
@@ -272,6 +287,15 @@ monitorados_salvos=[${salvos}]`,
         for (const msg of m.messages) {
           const jid = msg.key.remoteJid || 'sem-jid'
           this.recepcao.porChat[jid] = (this.recepcao.porChat[jid] ?? 0) + 1
+          // Guarda a mais ANTIGA vista nesta sessão: é dela que se pede o que
+          // veio antes. Guardar a mais recente pediria histórico de um ponto
+          // que já processamos.
+          if (msg.key.id && jid !== 'sem-jid') {
+            const atual = this.ultimaMensagemPorGrupo.get(jid)
+            if (!atual || messageTimestampMs(msg) < messageTimestampMs(atual)) {
+              this.ultimaMensagemPorGrupo.set(jid, msg)
+            }
+          }
         }
 
         const messages = m.type === 'notify'
@@ -654,7 +678,7 @@ monitorados_salvos=[${salvos}]`,
    * explícito depende de o servidor responder (e a resposta chega depois,
    * pelo mesmo `messaging-history.set` de sempre).
    */
-  async varrerHistorico(horas: number): Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number }> {
+  async varrerHistorico(horas: number): Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number; semAncora?: boolean }> {
     if (this.status !== 'connected' || !this.sock) {
       return { ok: false, erro: 'O WhatsApp não está conectado.', processadas: 0, pedidos: 0, grupos: 0 }
     }
@@ -686,9 +710,13 @@ monitorados_salvos=[${salvos}]`,
     }).fetchMessageHistory
     if (typeof buscar === 'function') {
       for (const grupo of monitorados) {
-        const doGrupo = this.historyBuffer.get(grupo.group_id)
-        if (!doGrupo || doGrupo.length === 0) continue
-        const maisAntiga = doGrupo.reduce((a, b) => (messageTimestampMs(a) <= messageTimestampMs(b) ? a : b))
+        // Âncora: a mais antiga do buffer, se houver, senão a mais antiga vista
+        // em tempo real. A segunda é o caminho que funciona na prática.
+        const doBufferDoGrupo = this.historyBuffer.get(grupo.group_id) ?? []
+        const candidatas = [...doBufferDoGrupo, this.ultimaMensagemPorGrupo.get(grupo.group_id)]
+          .filter((m): m is proto.IWebMessageInfo => !!m && !!m.key && messageTimestampMs(m) > 0)
+        if (candidatas.length === 0) continue
+        const maisAntiga = candidatas.reduce((a, b) => (messageTimestampMs(a) <= messageTimestampMs(b) ? a : b))
         const ts = messageTimestampMs(maisAntiga)
         if (!maisAntiga.key || !ts) continue
         try {
@@ -700,7 +728,21 @@ monitorados_salvos=[${salvos}]`,
       }
     }
 
-    return { ok: true, processadas, pedidos, grupos: monitorados.length }
+    // Sem âncora nenhuma não dá pra pedir histórico ao WhatsApp — e dizer só
+    // "0 mensagens" faria parecer que nada tinha se perdido.
+    const semAncora = pedidos === 0 && processadas === 0
+    this.dbManager.addLog({
+      type: semAncora ? 'warning' : 'info',
+      platform: 'whatsapp',
+      message: semAncora
+        ? 'Varredura sem resultado — o app ainda não viu nenhuma mensagem destes grupos'
+        : `Varredura concluída — ${processadas} mensagem(ns) reprocessada(s), ${pedidos} pedido(s) de histórico enviado(s)`,
+      details: semAncora
+        ? 'A varredura precisa de ao menos uma mensagem já recebida de cada grupo para saber de onde pedir o histórico. Deixe o app conectado alguns minutos e tente de novo.'
+        : 'O histórico pedido chega em segundo plano e é capturado como mensagem normal. Ofertas já capturadas são ignoradas.',
+    })
+
+    return { ok: true, processadas, pedidos, grupos: monitorados.length, semAncora }
   }
 
   private unwrapMessage(message: proto.IMessage | null | undefined): proto.IMessage | null | undefined {

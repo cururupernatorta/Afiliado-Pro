@@ -28,13 +28,20 @@ export interface ElectronAPI {
 
   // Produtos
   productGetAll: () => Promise<any[]>
+  statsGet: () => Promise<{
+    produtos: number
+    enviosHoje: number
+    gruposMonitorados: number
+    capturados: number
+    porLoja: { store: string; total: number }[]
+  }>
   productGetById: (id: number) => Promise<any>
   productCreate: (data: any) => Promise<any>
   productUpdate: (id: number, data: any) => Promise<void>
   productDelete: (id: number) => Promise<void>
   productScrape: (url: string) => Promise<any>
   scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
-  whatsappSweepHistory: (horas: number) => Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number }>
+  whatsappSweepHistory: (horas: number) => Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number; semAncora?: boolean }>
 
   // Config
   configGet: () => Promise<any>

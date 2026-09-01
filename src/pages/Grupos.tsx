@@ -117,6 +117,13 @@ export default function Grupos() {
       const r = await window.electronAPI.whatsappSweepHistory(horasVarredura)
       if (!r.ok) {
         setResultadoVarredura(r.erro || 'Não foi possível varrer agora.')
+      } else if (r.semAncora) {
+        // Dizer só "0 mensagens" faria parecer que nada tinha se perdido,
+        // quando na verdade a varredura não teve de onde partir.
+        setResultadoVarredura(
+          'A varredura não teve de onde partir: o app ainda não recebeu nenhuma mensagem destes grupos nesta sessão. ' +
+          'Deixe conectado alguns minutos e tente de novo.'
+        )
       } else {
         const partes = [`${r.processadas} mensagem(ns) reprocessada(s) de ${r.grupos} grupo(s)`]
         if (r.pedidos > 0) {

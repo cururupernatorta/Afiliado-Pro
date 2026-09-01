@@ -13,7 +13,7 @@ import Logs from './pages/Logs'
 import { useAppStore } from './stores/appStore'
 
 function App() {
-  const { setWhatsappStatus, setWhatsappQrCode, setTelegramStatus, setMercadoLivreStatus } = useAppStore()
+  const { setWhatsappStatus, setWhatsappQrCode, setTelegramStatus, setMercadoLivreStatus, setProducts, setGroups, setLogs } = useAppStore()
 
   // Esses listeners viviam dentro de Conexoes.tsx, então só captavam eventos
   // enquanto o usuário estava naquela aba — o React Router desmonta a página
@@ -29,6 +29,26 @@ function App() {
       if (s.qrCode) setWhatsappQrCode(s.qrCode)
     })
     window.electronAPI.telegramGetStatus().then((s) => setTelegramStatus(s.status))
+
+    // Carrega o que já está no banco assim que o app abre. Sem isto, o único
+    // caminho para um produto aparecer na tela era o cadastro manual daquela
+    // sessão (`addProduct`): tudo que foi capturado de grupo ou achado pela
+    // busca automática era gravado pelo processo principal e nunca chegava
+    // aqui, e ao fechar o app a lista voltava vazia. O IPC já existia.
+    window.electronAPI.productGetAll()
+      .then((p) => setProducts(p as any))
+      .catch(() => { /* banco ainda abrindo — o app não deve quebrar por isso */ })
+    Promise.all([
+      window.electronAPI.groupGetSaved('whatsapp'),
+      window.electronAPI.groupGetSaved('telegram'),
+    ])
+      .then(([wpp, tg]) => setGroups([...(wpp as any[]), ...(tg as any[])].map((g: any) => ({
+        ...g, id: g.group_id, name: g.group_name, monitored: !!g.monitored,
+      })) as any))
+      .catch(() => { /* idem */ })
+    window.electronAPI.logsGet(100, 0)
+      .then((l) => setLogs(l as any))
+      .catch(() => { /* idem */ })
     window.electronAPI.mercadoLivreGetStatus().then((status) => setMercadoLivreStatus(status))
 
     const unsubQr = window.electronAPI.onWhatsAppQrCode((qr) => setWhatsappQrCode(qr))

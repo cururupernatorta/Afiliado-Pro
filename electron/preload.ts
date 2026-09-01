@@ -1,6 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { SendProductsExtra } from './queue'
 
+export interface DashboardStats {
+  produtos: number
+  enviosHoje: number
+  gruposMonitorados: number
+  capturados: number
+  porLoja: { store: string; total: number }[]
+}
+
 export interface ElectronAPI {
   whatsappConnect: () => Promise<void>
   whatsappDisconnect: () => Promise<void>
@@ -27,13 +35,14 @@ export interface ElectronAPI {
   onMercadoLivreStatus: (callback: (status: string) => void) => () => void
 
   productGetAll: () => Promise<any[]>
+  statsGet: () => Promise<DashboardStats>
   productGetById: (id: number) => Promise<any>
   productCreate: (data: any) => Promise<any>
   productUpdate: (id: number, data: any) => Promise<void>
   productDelete: (id: number) => Promise<void>
   productScrape: (url: string) => Promise<any>
   scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
-  whatsappSweepHistory: (horas: number) => Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number }>
+  whatsappSweepHistory: (horas: number) => Promise<{ ok: boolean; erro?: string; processadas: number; pedidos: number; grupos: number; semAncora?: boolean }>
 
   configGet: () => Promise<any>
   configSave: (config: any) => Promise<void>
@@ -110,6 +119,7 @@ const api: ElectronAPI = {
   },
 
   productGetAll: () => ipcRenderer.invoke('product:getAll'),
+  statsGet: () => ipcRenderer.invoke('stats:get'),
   productGetById: (id) => ipcRenderer.invoke('product:getById', id),
   productCreate: (data) => ipcRenderer.invoke('product:create', data),
   productUpdate: (id, data) => ipcRenderer.invoke('product:update', id, data),

@@ -11,7 +11,7 @@ export interface Product {
   original_url: string
   affiliate_url?: string
   store: 'shopee' | 'mercado_livre' | 'amazon' | 'aliexpress'
-  source: 'manual' | 'whatsapp' | 'telegram'
+  source: 'manual' | 'whatsapp' | 'telegram' | 'busca'
   created_at: string
   updated_at: string
 }

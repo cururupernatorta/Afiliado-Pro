@@ -19,7 +19,7 @@ export interface Product {
   /** Página de cupom da loja; vira link de afiliado na hora do envio. */
   coupon_url?: string
   store: 'shopee' | 'mercado_livre' | 'amazon' | 'aliexpress'
-  source: 'manual' | 'whatsapp' | 'telegram'
+  source: 'manual' | 'whatsapp' | 'telegram' | 'busca'
   created_at?: string
   updated_at?: string
 }
@@ -154,7 +154,7 @@ export class DatabaseManager extends EventEmitter {
         pix_price REAL,
         coupon_url TEXT,
         store TEXT NOT NULL CHECK(store IN ('shopee', 'mercado_livre', 'amazon', 'aliexpress')),
-        source TEXT NOT NULL CHECK(source IN ('manual', 'whatsapp', 'telegram')),
+        source TEXT NOT NULL CHECK(source IN ('manual', 'whatsapp', 'telegram', 'busca')),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -374,6 +374,92 @@ export class DatabaseManager extends EventEmitter {
       log.error('Erro na migração de pix_price/coupon_url:', err)
     }
 
+    // Migração: (a) a coluna `source` ganha o valor 'busca', para a oferta achada
+    // pela busca automática parar de se passar por cadastro manual — o card
+    // "Produtos Capturados" do Dashboard contava `source != 'manual'` e por isso
+    // dava sempre zero; e (b) as URLs já gravadas são normalizadas e os
+    // duplicados removidos.
+    //
+    // O (b) é necessário porque a página de ofertas do Mercado Livre devolve um
+    // `deal_print_id` novo a cada carregamento: a mesma oferta entrava como
+    // produto novo em toda busca. A correção nova evita criar mais, mas os que
+    // já estão no banco continuariam lá, e o UNIQUE de `original_url` impediria
+    // a normalização sem antes remover as repetições.
+    //
+    // Trocar um CHECK exige reconstruir a tabela — SQLite não altera restrição.
+    try {
+      const cols = this.db.prepare('PRAGMA table_info(products)').all() as any[]
+      const jaTem = cols.length > 0 && (this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='products'")
+        .get() as any)?.sql?.includes("'busca'")
+
+      if (cols.length > 0 && !jaTem) {
+        // Pega a base da URL do jeito que o app faz: corta no primeiro '?' ou '#'.
+        const URL_BASE = `
+          CASE
+            WHEN instr(original_url, '?') > 0
+             AND (instr(original_url, '#') = 0 OR instr(original_url, '?') < instr(original_url, '#'))
+              THEN substr(original_url, 1, instr(original_url, '?') - 1)
+            WHEN instr(original_url, '#') > 0
+              THEN substr(original_url, 1, instr(original_url, '#') - 1)
+            ELSE original_url
+          END`
+
+        const antes = (this.db.prepare('SELECT COUNT(*) c FROM products').get() as any).c
+        this.db.exec('PRAGMA foreign_keys = OFF')
+        this.db.exec(`
+          BEGIN;
+
+          CREATE TABLE products_migracao (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            price REAL NOT NULL,
+            original_price REAL,
+            image_url TEXT,
+            image_path TEXT,
+            description TEXT,
+            original_url TEXT NOT NULL UNIQUE,
+            affiliate_url TEXT,
+            pix_price REAL,
+            coupon_url TEXT,
+            store TEXT NOT NULL CHECK(store IN ('shopee', 'mercado_livre', 'amazon', 'aliexpress')),
+            source TEXT NOT NULL CHECK(source IN ('manual', 'whatsapp', 'telegram', 'busca')),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+
+          -- Mantém a linha MAIS ANTIGA de cada URL: é a que já foi enviada e a
+          -- que o histórico de envios referencia por product_id.
+          INSERT INTO products_migracao
+            (id, title, price, original_price, image_url, image_path, description,
+             original_url, affiliate_url, pix_price, coupon_url, store, source, created_at, updated_at)
+          SELECT p.id, p.title, p.price, p.original_price, p.image_url, p.image_path, p.description,
+                 ${URL_BASE}, p.affiliate_url, p.pix_price, p.coupon_url, p.store, p.source, p.created_at, p.updated_at
+          FROM products p
+          WHERE p.id = (
+            SELECT MIN(p2.id) FROM products p2
+            WHERE ${URL_BASE.replace(/original_url/g, 'p2.original_url')} = ${URL_BASE.replace(/original_url/g, 'p.original_url')}
+          );
+
+          DROP TABLE products;
+          ALTER TABLE products_migracao RENAME TO products;
+
+          CREATE INDEX IF NOT EXISTS idx_products_store ON products(store);
+          CREATE INDEX IF NOT EXISTS idx_products_source ON products(source);
+          CREATE INDEX IF NOT EXISTS idx_products_created ON products(created_at);
+
+          COMMIT;
+        `)
+        this.db.exec('PRAGMA foreign_keys = ON')
+        const depois = (this.db.prepare('SELECT COUNT(*) c FROM products').get() as any).c
+        log.info(`Migração: products reconstruída — ${antes} linha(s) viraram ${depois} (${antes - depois} duplicata(s) removida(s)), e o source agora aceita 'busca'`)
+      }
+    } catch (err) {
+      log.error('Erro na migração de products (source/duplicatas):', err)
+      try { this.db.exec('ROLLBACK') } catch { /* não havia transação aberta */ }
+      try { this.db.exec('PRAGMA foreign_keys = ON') } catch { /* idem */ }
+    }
+
     // Migração: intervalo da busca automática passa a ser em MINUTOS. Em horas
     // inteiras o mínimo possível era 1h, e para testar (ou para quem quer
     // acompanhar oferta relâmpago) isso é tempo demais. Converte o valor que já
@@ -464,6 +550,49 @@ export class DatabaseManager extends EventEmitter {
 
   getProductByUrl(url: string): Product | undefined {
     return this.db.prepare('SELECT * FROM products WHERE original_url = ?').get(url) as Product | undefined
+  }
+
+  /**
+   * Números do Dashboard, direto do banco. "Envios hoje" vem de `send_history`
+   * (que já existia, com índice em `sent_at`, e ninguém consultava) e não da
+   * fila em memória: a fila é esvaziada e não tem noção de data, então o card
+   * mostrava qualquer coisa menos os envios do dia.
+   */
+  /**
+   * Este produto já foi enviado para este grupo? Consulta o `send_history`, que
+   * é gravado só quando o envio de fato aconteceu.
+   *
+   * É a última barreira contra anúncio repetido, e de propósito no ponto mais
+   * baixo: a deduplicação por URL resolve o caso comum, mas não cobre o mesmo
+   * produto chegando por dois caminhos (a busca automática acha, e alguém posta
+   * o link no grupo monitorado), nem uma recaptura depois de o app reiniciar.
+   * Aqui não importa como o produto chegou — se já foi para aquele grupo, não
+   * vai de novo.
+   */
+  produtoJaEnviadoAoGrupo(platform: string, groupId: string, productId: number): boolean {
+    const row = this.db
+      .prepare('SELECT 1 FROM send_history WHERE platform = ? AND group_id = ? AND product_id = ? LIMIT 1')
+      .get(platform, groupId, productId)
+    return !!row
+  }
+
+  getDashboardStats(): {
+    produtos: number
+    enviosHoje: number
+    gruposMonitorados: number
+    capturados: number
+    porLoja: { store: string; total: number }[]
+  } {
+    const um = (sql: string, ...p: any[]) => (this.db.prepare(sql).get(...p) as any).c as number
+    return {
+      produtos: um('SELECT COUNT(*) c FROM products'),
+      // date('now','localtime') e não date('now'): sem isso o "hoje" seria o dia
+      // em UTC, e das 21h em diante o contador zerava no meio da noite do usuário.
+      enviosHoje: um("SELECT COUNT(*) c FROM send_history WHERE date(sent_at, 'localtime') = date('now', 'localtime')"),
+      gruposMonitorados: um('SELECT COUNT(*) c FROM group_monitors WHERE monitored = 1'),
+      capturados: um("SELECT COUNT(*) c FROM products WHERE source != 'manual'"),
+      porLoja: this.db.prepare('SELECT store, COUNT(*) total FROM products GROUP BY store ORDER BY total DESC').all() as any[],
+    }
   }
 
   productExistsByUrl(url: string): boolean {

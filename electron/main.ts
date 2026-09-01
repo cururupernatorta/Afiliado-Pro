@@ -378,7 +378,10 @@ app.whenReady().then(async () => {
           const deals = await scraperManager.searchDeals(nicho, store)
           for (const deal of deals) {
             if (!dbManager.productExistsByUrl(deal.original_url!)) {
-              const created = dbManager.createProduct(deal as any)
+              // Sem isto a oferta entrava como 'manual' (o padrão que o raspador
+            // deixa), e o card "Produtos Capturados" — que conta source != 'manual'
+            // — dava sempre zero mesmo com o app achando oferta o dia todo.
+            const created = dbManager.createProduct({ ...deal, source: 'busca' } as any)
               if (created) {
                 const affiliateUrl = await affiliateManager.convertLink(deal.original_url!, store as any)
                 if (affiliateUrl) {
@@ -509,6 +512,10 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('mercadolivre:logout', () => affiliateManager.mercadoLivreLink.logout())
 
   ipcMain.handle('product:getAll', () => dbManager.getAllProducts())
+  // O Dashboard calculava tudo a partir do que estava carregado no renderer —
+  // e o renderer nunca carregava nada do banco, então os quatro cards viviam
+  // zerados (ou contando só o que foi cadastrado à mão naquela sessão).
+  ipcMain.handle('stats:get', () => dbManager.getDashboardStats())
   ipcMain.handle('product:getById', (_, id: number) => dbManager.getProductById(id))
   ipcMain.handle('product:create', async (_, data) => {
     let product = dbManager.createProduct(data)

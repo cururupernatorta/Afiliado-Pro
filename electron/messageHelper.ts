@@ -111,7 +111,16 @@ export async function autoRepostProduct(
     )
 
     let delay = 0
+    let jaEnviados = 0
     for (const target of targets) {
+      // Barreira contra anúncio repetido. Só vale para o repost automático —
+      // o envio manual continua livre, porque ali a repetição é escolha do
+      // usuário, não acidente.
+      if (product.id && dbManager.produtoJaEnviadoAoGrupo(sourcePlatform, target.group_id, product.id)) {
+        jaEnviados++
+        continue
+      }
+
       const template = dbManager.getAdTemplate(sourcePlatform, target.group_id)
       const templateText = template?.template_text ?? DEFAULT_TEMPLATE_TEXT
 
@@ -134,11 +143,26 @@ export async function autoRepostProduct(
     // pelo log "Produto enviado" que a fila registra depois de cada job
     // processado com sucesso — essa entrada aqui só significa que os jobs
     // foram criados, não que já chegaram no grupo.
+    const enfileirados = targets.length - jaEnviados
+    if (enfileirados === 0) {
+      // Silêncio aqui seria pior que a repetição que estamos evitando: sem
+      // essa linha, o usuário vê a oferta ser encontrada e nada acontecer.
+      dbManager.addLog({
+        type: 'info',
+        platform: sourcePlatform,
+        message: `Anúncio repetido evitado: ${product.title}`,
+        details: `Este produto já tinha sido enviado para ${jaEnviados === 1 ? 'o grupo de destino' : `os ${jaEnviados} grupos de destino`}.`,
+      })
+      return
+    }
+
     dbManager.addLog({
       type: 'info',
       platform: sourcePlatform,
-      message: `Auto-repost: ${product.title} adicionado à fila para ${targets.length} grupo(s)`,
-      details: `Plataforma: ${sourcePlatform}`,
+      message: `Auto-repost: ${product.title} adicionado à fila para ${enfileirados} grupo(s)`,
+      details: jaEnviados > 0
+        ? `Plataforma: ${sourcePlatform}. ${jaEnviados} grupo(s) pulado(s) por já ter recebido este produto.`
+        : `Plataforma: ${sourcePlatform}`,
     })
   } catch (error) {
     log.error('Erro no auto-repost:', error)

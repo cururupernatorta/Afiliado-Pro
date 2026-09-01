@@ -30,18 +30,39 @@ const itemVariants = {
 }
 
 export default function Dashboard() {
-  const { products, groups, queueJobs, logs, whatsappStatus, telegramStatus } = useAppStore()
+  const { products, logs, whatsappStatus, telegramStatus } = useAppStore()
   const [recentProducts, setRecentProducts] = useState(products.slice(0, 5))
+  // Os números vêm do banco, não do que está carregado na tela. Antes eram
+  // calculados sobre a store — que só tinha o que fosse cadastrado à mão
+  // naquela sessão — e "Envios Hoje" contava jobs da fila em memória, sem
+  // nenhum filtro de data.
+  const [numeros, setNumeros] = useState({ produtos: 0, enviosHoje: 0, gruposMonitorados: 0, capturados: 0 })
 
   useEffect(() => {
     setRecentProducts(products.slice(0, 5))
   }, [products])
 
+  useEffect(() => {
+    const carregar = () => {
+      window.electronAPI.statsGet()
+        .then((s) => setNumeros({
+          produtos: s.produtos, enviosHoje: s.enviosHoje,
+          gruposMonitorados: s.gruposMonitorados, capturados: s.capturados,
+        }))
+        .catch(() => { /* banco ocupado — mantém o último valor em vez de zerar */ })
+    }
+    carregar()
+    // O app fica aberto o dia todo: sem isso os números congelariam no momento
+    // em que a tela foi montada.
+    const timer = setInterval(carregar, 30000)
+    return () => clearInterval(timer)
+  }, [])
+
   const statsData = {
-    products: products.length,
-    sends: queueJobs.filter((j) => j.status === 'completed').length,
-    groups: groups.filter((g) => g.monitored).length,
-    captured: products.filter((p) => p.source !== 'manual').length,
+    products: numeros.produtos,
+    sends: numeros.enviosHoje,
+    groups: numeros.gruposMonitorados,
+    captured: numeros.capturados,
   }
 
   const recentLogs = logs.slice(0, 10)
@@ -126,9 +147,11 @@ export default function Dashboard() {
                         ? 'bg-blue-400/10 text-blue-400'
                         : product.source === 'whatsapp'
                         ? 'bg-green-400/10 text-green-400'
+                        : product.source === 'busca'
+                        ? 'bg-amber-400/10 text-amber-400'
                         : 'bg-purple-400/10 text-purple-400'
                     }`}>
-                      {product.source}
+                      {product.source === 'busca' ? 'busca automática' : product.source}
                     </span>
                   </div>
                 </motion.div>
