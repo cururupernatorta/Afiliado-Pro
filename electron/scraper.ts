@@ -272,10 +272,16 @@ export class ScraperManager {
     }
 
     if (price === 0) {
+      // A raspagem da Shopee falhar é o esperado — a página é um SPA com
+      // captcha. O que importa saber é por que a API oficial, que é o caminho
+      // de verdade, não respondeu: sem isso, credencial faltando e produto fora
+      // do programa de afiliados produziam a mesma mensagem inútil.
+      const motivo = this.shopeeApi.motivoDaUltimaFalha()
       throw new Error(
-        'Não consegui extrair o preço da Shopee, mesmo com o browser headless (a Shopee pode ' +
-        'ter detectado automação, mudado o layout, ou o produto está indisponível). Use o campo ' +
-        '"Link de Afiliado Manual" e informe o preço manualmente ao cadastrar o produto.'
+        (motivo
+          ? `A API oficial da Shopee não devolveu este produto: ${motivo}. A raspagem da página não funciona como reserva (a Shopee bloqueia). `
+          : 'Não consegui extrair o preço da Shopee, mesmo com o browser headless (a Shopee pode ter detectado automação, mudado o layout, ou o produto está indisponível). ') +
+        'Use o campo "Link de Afiliado Manual" e informe o preço manualmente ao cadastrar o produto.'
       )
     }
 

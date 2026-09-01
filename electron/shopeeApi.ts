@@ -35,6 +35,17 @@ export function isShopeeShortLink(url: string): boolean {
 export class ShopeeApi {
   private dbManager: DatabaseManager
   private lastNotifiedReason: string | null = null
+  // Motivo da última falha, para viajar junto com o erro de captura. O
+  // notifyOnce registra o motivo UMA vez e cala até dar certo de novo — ótimo
+  // pra não encher o log, péssimo pra diagnosticar: quando a captura falhava
+  // dias depois, só sobrava "não consegui extrair o preço", sem dizer que a
+  // API nem tinha sido consultada por falta de credencial.
+  private ultimoMotivo: string | null = null
+
+  /** Por que a última consulta à API não devolveu produto. */
+  motivoDaUltimaFalha(): string | null {
+    return this.ultimoMotivo
+  }
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager
@@ -81,6 +92,7 @@ export class ShopeeApi {
         'Sem elas os dados do produto dependem de raspagem, que a Shopee bloqueia. ' +
           'Preencha App ID e App Secret em Configurações (open-api.affiliate.shopee.com.br).'
       )
+      this.ultimoMotivo = 'as credenciais da Shopee (App ID e App Secret) não estão preenchidas em Configurações'
       return null
     }
 
@@ -124,6 +136,7 @@ export class ShopeeApi {
     const ids = extractShopeeIds(resolvedUrl)
     if (!ids) {
       log.warn(`Não consegui extrair shopId/itemId da URL da Shopee: ${resolvedUrl}`)
+      this.ultimoMotivo = 'o link não tem o código da loja/produto que a API precisa'
       return null
     }
 
@@ -142,6 +155,7 @@ export class ShopeeApi {
           'A API da Shopee não retornou este produto',
           `shopId=${ids.shopId} itemId=${ids.itemId} — pode estar fora do programa de afiliados ou indisponível.`
         )
+        this.ultimoMotivo = 'a API oficial não conhece este produto (fora do programa de afiliados ou indisponível)'
         return null
       }
 
@@ -151,6 +165,7 @@ export class ShopeeApi {
       const price = [node.price, node.priceMin].map(Number).find((v) => Number.isFinite(v) && v > 0)
       if (!price) {
         log.warn(`Shopee devolveu o produto ${ids.itemId} sem preço utilizável`)
+        this.ultimoMotivo = 'a API oficial devolveu o produto sem preço'
         return null
       }
 
@@ -160,6 +175,7 @@ export class ShopeeApi {
       // tipo de preço fabricado que este app não deve exibir. O desconto real
       // continua aparecendo, em porcentagem, no texto do anúncio.
       this.lastNotifiedReason = null
+      this.ultimoMotivo = null
 
       return {
         title: node.productName || 'Produto Shopee',
@@ -177,6 +193,7 @@ export class ShopeeApi {
         ? JSON.stringify(error.response.data).substring(0, 300)
         : error.message
       this.notifyOnce('falha-api', 'Falha ao consultar a API da Shopee', detail)
+      this.ultimoMotivo = `a API oficial recusou a consulta (${String(detail).substring(0, 120)})`
       return null
     }
   }

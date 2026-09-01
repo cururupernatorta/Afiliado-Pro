@@ -50,6 +50,7 @@ export class WhatsAppManager {
     porTipo: {} as Record<string, number>,
     porChat: {} as Record<string, number>,
     flushesForcados: 0,
+    proprias: 0,
     aposFiltroDeTipo: 0,
     semConteudo: 0,
     stubs: {} as Record<string, number>,
@@ -58,6 +59,9 @@ export class WhatsAppManager {
     deGrupoMonitorado: 0,
     comLink: 0,
   }
+  private estabilidadeTimer: NodeJS.Timeout | null = null
+  // Uma conexão precisa se sustentar por este tempo pra ser considerada boa.
+  private readonly CONEXAO_ESTAVEL_MS = 60 * 1000
   private flushWatchdog: NodeJS.Timeout | null = null
   // O Baileys libera o buffer sozinho em 1-2 segundos quando o servidor avisa
   // que terminou de mandar o acumulado. 15 segundos é margem larga pra isso.
@@ -101,12 +105,12 @@ export class WhatsAppManager {
       message: r.mensagens === 0 && monitorados.length > 0
         ? `Nenhuma mensagem recebida do WhatsApp nos últimos 30 min (${monitorados.length} grupo(s)/canal(is) monitorado(s))`
         : `Recepção do WhatsApp nos últimos 30 min: ${r.mensagens} mensagem(ns), ${r.deGrupoMonitorado} de grupo monitorado`,
-      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
+      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
 chats_que_mandaram=[${chats}]
 monitorados_salvos=[${salvos}]`,
     })
 
-    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
   }
 
   async connect(): Promise<void> {
@@ -152,7 +156,14 @@ monitorados_salvos=[${salvos}]`,
         if (connection === 'close') {
           const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
           const isLoggedOut = statusCode === DisconnectReason.loggedOut
-          const shouldReconnect = !isLoggedOut
+          // 440 = connectionReplaced: outra sessão assumiu a conexão. Reconectar
+          // aqui é o pior movimento possível — a nossa reconexão derruba a outra,
+          // a outra reconecta e derruba a nossa, e vira um pingue-pongue de 5 em
+          // 5 segundos. No log do testador foram ~35 ciclos em 4 minutos, e o
+          // WhatsApp terminou INVALIDANDO a sessão (401), ou seja, o loop custou
+          // o pareamento dele. Melhor ficar desconectado e avisar.
+          const isReplaced = statusCode === DisconnectReason.connectionReplaced
+          const shouldReconnect = !isLoggedOut && !isReplaced
           log.info('Conexão WhatsApp fechada. Reconectar:', shouldReconnect)
 
           // Sem isso não tinha nenhum rastro de quando/por que o WhatsApp caiu —
@@ -160,12 +171,16 @@ monitorados_salvos=[${salvos}]`,
           // realmente invalidada (precisa QR de novo) ou queda passageira que
           // reconecta sozinha.
           this.dbManager.addLog({
-            type: isLoggedOut ? 'error' : 'warning',
+            type: isLoggedOut || isReplaced ? 'error' : 'warning',
             platform: 'whatsapp',
             message: isLoggedOut
               ? 'WhatsApp desconectado — sessão invalidada, será necessário escanear o QR Code novamente'
-              : 'WhatsApp desconectado — tentando reconectar automaticamente',
-            details: `statusCode=${statusCode ?? 'desconhecido'}, tentativas seguidas=${this.reconnectAttempts}`,
+              : isReplaced
+                ? 'WhatsApp desconectado — outro aparelho ou aba assumiu esta conexão'
+                : 'WhatsApp desconectado — tentando reconectar automaticamente',
+            details: isReplaced
+              ? 'Feche o WhatsApp Web em outras abas e qualquer outra cópia do Afiliado Pro, depois reconecte em Conexões. O app NÃO vai reconectar sozinho de propósito: as duas conexões ficariam se derrubando e o WhatsApp acaba invalidando a sessão.'
+              : `statusCode=${statusCode ?? 'desconhecido'}, tentativas seguidas=${this.reconnectAttempts}`,
           })
 
           this.status = 'disconnected'
@@ -211,7 +226,15 @@ monitorados_salvos=[${salvos}]`,
         } else if (connection === 'open') {
           this.status = 'connected'
           this.qrCode = null
-          this.reconnectAttempts = 0
+          // O contador NÃO zera aqui. Zerar no 'open' fazia a espera progressiva
+          // nunca sair dos 5 segundos numa conexão instável: abre, cai em 1
+          // segundo, tenta de novo em 5, abre, cai... foi assim que o log do
+          // testador acumulou ~35 ciclos em 4 minutos, sempre com
+          // "tentativas seguidas=0". Só zera se a conexão se sustentar.
+          if (this.estabilidadeTimer) clearTimeout(this.estabilidadeTimer)
+          this.estabilidadeTimer = setTimeout(() => {
+            if (this.status === 'connected') this.reconnectAttempts = 0
+          }, this.CONEXAO_ESTAVEL_MS)
           if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
           sendToRenderer('whatsapp:status', 'connected')
           log.info('WhatsApp conectado')
@@ -316,6 +339,7 @@ monitorados_salvos=[${salvos}]`,
 
   private encerrarSocketAnterior(): void {
     if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
+    if (this.estabilidadeTimer) { clearTimeout(this.estabilidadeTimer); this.estabilidadeTimer = null }
     if (!this.sock) return
     const antigo = this.sock
     this.sock = null
@@ -362,6 +386,7 @@ monitorados_salvos=[${salvos}]`,
   closeConnection(): void {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
+    if (this.estabilidadeTimer) { clearTimeout(this.estabilidadeTimer); this.estabilidadeTimer = null }
     if (this.sock) {
       try {
         this.sock.end(undefined)
@@ -592,7 +617,11 @@ monitorados_salvos=[${salvos}]`,
   }
 
   private async handleIncomingMessage(msg: proto.IWebMessageInfo): Promise<void> {
-    if (msg.key.fromMe) return
+    // Mensagem própria saía por um return mudo e ficava indistinguível de
+    // "chegou e o texto estava vazio" no relatório — foi o que aconteceu no log
+    // do testador: 8 mensagens passando o filtro e com_texto=0 E sem_texto=0
+    // ao mesmo tempo, que só é possível se todas saíram aqui.
+    if (msg.key.fromMe) { this.recepcao.proprias++; return }
     // Mensagem sem conteúdo é o ponto cego mais perigoso do fluxo: quando a
     // sessão Signal do dispositivo se desencontra, o WhatsApp entrega a
     // mensagem mas o Baileys não consegue decifrar, e ela chega com

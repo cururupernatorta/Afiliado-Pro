@@ -572,6 +572,9 @@ const setupIpcHandlers = (): void => {
     // Sem isto, mudar o intervalo ou ligar a busca só passa a valer no próximo
     // início do app.
     reagendarBuscaAutomatica?.()
+    // Credencial nova do AliExpress merece uma tentativa imediata, sem esperar
+    // a trava de 6h que uma credencial inválida deixou armada.
+    affiliateManager.resetarBloqueioAliExpress()
   })
   ipcMain.handle('scrape:run-now', async () => {
     if (!buscarOfertasAgora) return { ok: false, erro: 'A busca de ofertas ainda não foi inicializada.' }

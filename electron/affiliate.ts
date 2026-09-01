@@ -254,6 +254,53 @@ export class AffiliateManager {
   //    (aff_fcid, sk, terminal_id...) — isso NÃO gera rastreamento real, só
   //    parece um link de afiliado. Sem API funcionando, é melhor devolver null
   //    (o app já usa a URL original nesse caso) do que fingir que é afiliado.
+  // Credencial do AliExpress inválida não é intermitência: é configuração
+  // errada, e vai falhar igual na próxima tentativa. Sem essa trava, cada ciclo
+  // de busca (que agora pode ser de 15 em 15 minutos) despejava duas chamadas
+  // inúteis e dois blocos de JSON cru no log do usuário, para sempre.
+  private aliexpressBloqueadoAte = 0
+  private readonly ALIEXPRESS_BLOQUEIO_MS = 6 * 60 * 60 * 1000
+
+  /** Chamado quando o usuário salva Configurações: credencial nova merece uma
+   *  chance imediata, sem esperar as 6 horas da trava. */
+  resetarBloqueioAliExpress(): void {
+    this.aliexpressBloqueadoAte = 0
+  }
+
+  private aliexpressEstaBloqueado(): boolean {
+    return Date.now() < this.aliexpressBloqueadoAte
+  }
+
+  /**
+   * Traduz o `error_response` do AliExpress. Devolve a mensagem pronta quando o
+   * erro é de credencial (e nesse caso trava as próximas chamadas), ou null
+   * quando é outra coisa.
+   *
+   * Vale reparar no código do erro: o AliExpress responde `InvalidSignature`
+   * quando a assinatura está errada e `InvalidAppKey` quando a chave em si não
+   * é reconhecida. Recebendo `InvalidAppKey`, o problema não é a nossa
+   * assinatura — é a credencial preenchida em Configurações.
+   */
+  private diagnosticarErroAliExpress(result: any): string | null {
+    const erro = result?.error_response
+    const code = erro?.code || erro?.sub_code
+    if (!code) return null
+
+    const deCredencial: Record<string, string> = {
+      InvalidAppKey: 'A App Key do AliExpress não é reconhecida. Confira App Key e App Secret em Configurações — eles vêm de open.aliexpress.com (console do desenvolvedor), NÃO do portal de afiliados, e a aplicação precisa ter a API de afiliados liberada.',
+      IllegalAppKey: 'A App Key do AliExpress foi recusada. Confira App Key e App Secret em Configurações.',
+      InvalidSignature: 'A assinatura da chamada ao AliExpress foi recusada — geralmente é o App Secret errado ou trocado com a App Key.',
+      IncompleteSignature: 'A assinatura da chamada ao AliExpress veio incompleta — confira o App Secret em Configurações.',
+      AppCallLimited: 'A aplicação do AliExpress está sem permissão para esta API. Peça a liberação da API de afiliados no console do desenvolvedor.',
+    }
+
+    const mensagem = deCredencial[String(code)]
+    if (!mensagem) return null
+
+    this.aliexpressBloqueadoAte = Date.now() + this.ALIEXPRESS_BLOQUEIO_MS
+    return mensagem
+  }
+
   private async convertAliExpress(url: string, config: any): Promise<string | null> {
     if (!config.aliexpress_app_key || !config.aliexpress_app_secret) {
       log.warn('Credenciais AliExpress (App Key/Secret) não configuradas — pulei geração de link de afiliado')
@@ -297,6 +344,17 @@ export class AffiliateManager {
 
       if (link) return link
 
+      const problemaCredencial = this.diagnosticarErroAliExpress(result)
+      if (problemaCredencial) {
+        this.dbManager.addLog({
+          type: 'error',
+          platform: 'system',
+          message: 'AliExpress: não foi possível gerar link de afiliado — credencial inválida',
+          details: problemaCredencial,
+        })
+        return null
+      }
+
       log.warn('AliExpress API não retornou link de afiliado:', JSON.stringify(result).substring(0, 400))
       return null
     } catch (error: any) {
@@ -336,6 +394,11 @@ export class AffiliateManager {
 
     const allDeals: { title: string; price: number; original_price?: number; image_url?: string; original_url: string; discountPercent: number }[] = []
 
+    if (this.aliexpressEstaBloqueado()) {
+      log.warn('AliExpress: busca pulada — credencial inválida detectada há pouco')
+      return []
+    }
+
     for (const keyword of keywords.slice(0, 2)) {
       try {
         const timestamp = Date.now()
@@ -364,6 +427,20 @@ export class AffiliateManager {
         if (!Array.isArray(products) || products.length === 0) {
           const rawTrail = JSON.stringify(result).substring(0, 500)
           log.warn(`AliExpress: sem produtos pra "${keyword}". Resposta: ${rawTrail}`)
+
+          // Erro de credencial: uma mensagem que diz o que fazer, uma única vez,
+          // em vez de JSON cru repetido a cada ciclo.
+          const problema = this.diagnosticarErroAliExpress(result)
+          if (problema) {
+            this.dbManager.addLog({
+              type: 'error',
+              platform: 'system',
+              message: 'AliExpress desativado — credencial inválida',
+              details: `${problema} A busca no AliExpress fica pausada por 6 horas ou até você salvar novas credenciais.`,
+            })
+            return allDeals.map(({ discountPercent, ...resto }) => resto)
+          }
+
           // Diagnóstico visível em Logs — sem poder testar essa chamada com
           // credenciais reais antes de publicar, se o formato da resposta for
           // diferente do esperado é assim que dá pra saber, em vez de só ficar
