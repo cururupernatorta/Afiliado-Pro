@@ -249,8 +249,16 @@ export class TelegramManager {
     try {
       log.info(`Link detectado no Telegram: ${url}`)
 
-      // Verificar se ja existe produto com essa URL (deduplicacao)
+      // Mesmo tratamento do WhatsApp: produto já conhecido não quer dizer
+      // produto já anunciado. Se nunca saiu para algum grupo de destino, vai
+      // pra fila; a barreira do `send_history` no auto-repost impede repetição
+      // de verdade.
       if (this.dbManager.productExistsByUrl(url)) {
+        const existente = this.dbManager.getProductByUrl(url)
+        if (existente?.id) {
+          await autoRepostProduct(existente, 'telegram', this.dbManager, this.queueManager)
+          return
+        }
         log.warn(`Produto ignorado - URL ja capturada anteriormente: ${url}`)
         this.dbManager.addLog({
           type: 'warning',

@@ -549,7 +549,16 @@ export class DatabaseManager extends EventEmitter {
   }
 
   getProductByUrl(url: string): Product | undefined {
-    return this.db.prepare('SELECT * FROM products WHERE original_url = ?').get(url) as Product | undefined
+    // Precisa usar a MESMA normalização do `productExistsByUrl`, senão os dois
+    // discordam: a checagem de duplicado encontra a linha (compara pela URL
+    // base) e a busca não (comparava a URL inteira). Isso quebrava o caminho de
+    // `product:create` que atualiza um produto já existente — ele achava
+    // duplicado, não conseguia localizar, e devolvia "Não consegui salvar nem
+    // localizar este produto" para uma URL com parâmetros de rastreio.
+    const base = urlBaseDoProduto(url)
+    return this.db
+      .prepare('SELECT * FROM products WHERE original_url = ? OR original_url LIKE ? OR original_url LIKE ? LIMIT 1')
+      .get(base, base + '?%', base + '#%') as Product | undefined
   }
 
   /**

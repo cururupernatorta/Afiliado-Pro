@@ -948,8 +948,23 @@ monitorados_salvos=[${salvos}]`,
     try {
       log.info(`Link detectado no WhatsApp: ${url}`)
 
-      // Verificar se já existe produto com essa URL (deduplicação)
+      // Produto já conhecido. Isso NÃO significa que ele já foi anunciado:
+      // relato real do testador — o app passou a tarde capturando sem
+      // conseguir enviar (envios falhando), e quando o link voltou a aparecer
+      // no grupo ele foi descartado como "duplicado", mesmo nunca tendo saído.
+      // O produto ficava preso: existe no banco, então toda recaptura pula, e
+      // nada o reenfileirava.
+      //
+      // Agora a pergunta certa é "já foi ENVIADO?", não "já é conhecido?". Se
+      // ainda não saiu para algum grupo de destino, entra na fila. A barreira
+      // do `send_history` dentro do auto-repost continua impedindo repetição de
+      // verdade, então isso não reabre a porta para anúncio repetido.
       if (this.dbManager.productExistsByUrl(url)) {
+        const existente = this.dbManager.getProductByUrl(url)
+        if (existente?.id) {
+          await autoRepostProduct(existente, 'whatsapp', this.dbManager, this.queueManager)
+          return
+        }
         log.warn(`Produto ignorado - URL já capturada anteriormente: ${url}`)
         this.dbManager.addLog({
           type: 'warning',
