@@ -87,8 +87,13 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
     return html
   })()
 
+  // O id precisa ser guardado pra ser cancelado no `finally`: sem isso, cada
+  // renderização deixava um timer vivo até o prazo cheio (25 s) mesmo quando
+  // terminava em 5-7 s, segurando o closure junto. Num canal ativo o dia todo
+  // isso se acumula sem necessidade.
+  let timeoutId: NodeJS.Timeout | undefined
   const timeoutPromise = new Promise<string>((_, reject) => {
-    setTimeout(() => reject(new Error('Timeout ao renderizar página com browser headless')), timeoutMs)
+    timeoutId = setTimeout(() => reject(new Error('Timeout ao renderizar página com browser headless')), timeoutMs)
   })
 
   try {
@@ -97,6 +102,7 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
     log.warn(`Falha ao renderizar ${url} com headless browser:`, (error as Error).message)
     throw error
   } finally {
+    if (timeoutId) clearTimeout(timeoutId)
     if (win && !(win as BrowserWindow).isDestroyed()) {
       ;(win as BrowserWindow).destroy()
     }

@@ -37,6 +37,11 @@ interface InMemoryJob {
   delayMs: number
   // Quantas vezes esse envio já esbarrou em conexão fora do ar.
   tentativasDeConexao?: number
+  // Momento a partir do qual este job pode ser tentado de novo. Sem isso, o
+  // job que espera reconexão era escolhido de novo a cada volta do laço (o
+  // `find` devolve sempre o primeiro em espera) e segurava a fila inteira —
+  // inclusive envios de uma plataforma que estava no ar.
+  naoAntesDe?: number
 }
 
 export class QueueManager {
@@ -128,7 +133,7 @@ export class QueueManager {
         limiter: { max: 1, duration: 5000 },
       }
     )
-    this.worker.on('failed', (job, err) => {
+    this.worker.on('failed', async (job, err) => {
       log.error('Job falhou:', err)
       if (this.dbManager && job) {
         this.dbManager.addLog({
@@ -138,10 +143,10 @@ export class QueueManager {
           details: err.message,
         })
       }
-      sendToRenderer('queue:update', this.getJobs())
+      sendToRenderer('queue:update', await this.getJobs())
     })
-    this.worker.on('completed', () => {
-      sendToRenderer('queue:update', this.getJobs())
+    this.worker.on('completed', async () => {
+      sendToRenderer('queue:update', await this.getJobs())
     })
   }
 
@@ -157,13 +162,16 @@ export class QueueManager {
         await new Promise((r) => setTimeout(r, 1000))
         continue
       }
-      const job = this.memoryQueue.find((j) => j.status === 'waiting')
+      const agora = Date.now()
+      const job = this.memoryQueue.find(
+        (j) => j.status === 'waiting' && (!j.naoAntesDe || j.naoAntesDe <= agora)
+      )
       if (!job) {
         await new Promise((r) => setTimeout(r, 1000))
         continue
       }
       job.status = 'active'
-      sendToRenderer('queue:update', this.getJobs())
+      sendToRenderer('queue:update', await this.getJobs())
 
       if (job.delayMs > 0) {
         await new Promise((r) => setTimeout(r, job.delayMs))
@@ -191,7 +199,10 @@ export class QueueManager {
         if (err instanceof ErroDeConexao && tentativas <= this.MAX_TENTATIVAS_DE_CONEXAO) {
           job.tentativasDeConexao = tentativas
           job.status = 'waiting'
-          job.delayMs = this.RETENTATIVA_CONEXAO_MS
+          // A espera vira um horário, não um sleep: assim o laço segue para o
+          // próximo job em vez de dormir segurando todos os outros.
+          job.naoAntesDe = Date.now() + this.RETENTATIVA_CONEXAO_MS
+          job.delayMs = 0
           log.warn(`Envio adiado (${job.data.platform} fora do ar), tentativa ${tentativas}/${this.MAX_TENTATIVAS_DE_CONEXAO} em ${job.delayMs / 1000}s`)
           if (tentativas === 1 && this.dbManager) {
             // Uma linha só, na primeira vez: o objetivo é o usuário saber que a
@@ -363,7 +374,7 @@ export class QueueManager {
         delayMs,
       }
       this.memoryQueue.push(job)
-      sendToRenderer('queue:update', this.getJobs())
+      void this.getJobs().then((jobs) => sendToRenderer('queue:update', jobs))
       return job
     }
   }

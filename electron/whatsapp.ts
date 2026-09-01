@@ -63,6 +63,7 @@ export class WhatsAppManager {
     porChat: {} as Record<string, number>,
     flushesForcados: 0,
     proprias: 0,
+    jaVistas: 0,
     aposFiltroDeTipo: 0,
     semConteudo: 0,
     stubs: {} as Record<string, number>,
@@ -117,12 +118,12 @@ export class WhatsAppManager {
       message: r.mensagens === 0 && monitorados.length > 0
         ? `Nenhuma mensagem recebida do WhatsApp nos últimos 30 min (${monitorados.length} grupo(s)/canal(is) monitorado(s))`
         : `Recepção do WhatsApp nos últimos 30 min: ${r.mensagens} mensagem(ns), ${r.deGrupoMonitorado} de grupo monitorado`,
-      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
+      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, ja_vistas=${r.jaVistas}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
 chats_que_mandaram=[${chats}]
 monitorados_salvos=[${salvos}]`,
     })
 
-    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
   }
 
   async connect(): Promise<void> {
@@ -260,6 +261,7 @@ monitorados_salvos=[${salvos}]`,
           log.info('WhatsApp conectado')
           this.startMonitoring()
           this.iniciarRelatorioDeRecepcao()
+          void this.assinarCanaisMonitorados()
         }
       })
 
@@ -298,9 +300,27 @@ monitorados_salvos=[${salvos}]`,
           }
         }
 
+        // Antes, num lote que não fosse 'notify', só mensagem de canal passava —
+        // e mensagem de grupo era descartada. Isso ficou destrutivo depois do
+        // watchdog de buffer: TODO lote liberado por ele chega como 'append', e
+        // o watchdog dispara em toda conexão. No log do testador, 4 mensagens de
+        // um grupo monitorado sumiram exatamente assim (33 recebidas, 29 depois
+        // do filtro), e isso acontecia o tempo todo.
+        //
+        // O filtro existia para não reprocessar histórico antigo. Hoje existem
+        // duas camadas de deduplicação que não existiam quando ele foi escrito
+        // — a URL normalizada e o `send_history` — então ele deixou de proteger
+        // e passou só a causar perda. Agora passa tudo que for de chat
+        // monitorado, seja grupo ou canal, em qualquer tipo de lote.
+        const monitoradosAgora = new Set(
+          this.dbManager.getMonitoredGroups('whatsapp').map((g) => g.group_id)
+        )
         const messages = m.type === 'notify'
           ? m.messages
-          : m.messages.filter((msg) => msg.key.remoteJid?.endsWith('@newsletter'))
+          : m.messages.filter((msg) => {
+              const jid = msg.key.remoteJid
+              return !!jid && (jid.endsWith('@newsletter') || monitoradosAgora.has(jid))
+            })
         this.recepcao.aposFiltroDeTipo += messages.length
         if (messages.length === 0) return
         // Em paralelo: um burst de várias mensagens não deve esperar a
@@ -336,6 +356,60 @@ monitorados_salvos=[${salvos}]`,
   //
   // Não temos como fazer o servidor mandar o nó que falta, então liberamos o
   // buffer por conta própria quando ele passa do tempo razoável.
+  /**
+   * Inscreve o app nas atualizações dos canais monitorados.
+   *
+   * Motivo: no log de um testador, UM canal específico entregou 26 de 26
+   * mensagens como CIPHERTEXT (não decifradas) em toda janela medida, enquanto
+   * os outros dois canais decifravam normalmente. A contagem batia exata com o
+   * total daquele canal nas quatro medições. Não é sessão corrompida nem
+   * limitação de canal em geral — é aquele canal.
+   *
+   * `subscribeNewsletterUpdates` nunca era chamado. É uma hipótese, não um
+   * conserto confirmado: os outros canais funcionam sem isso. O campo
+   * `nao_decifradas` do relatório de recepção vai dizer se resolveu.
+   */
+  private async assinarCanaisMonitorados(): Promise<void> {
+    // Fixa o socket: o laço abaixo tem `await` a cada canal, e uma queda no meio
+    // (acontece a cada 30-90 min nos logs reais) trocaria `this.sock` por null
+    // ou por um socket novo — chamando o método de um socket com o `this` de
+    // outro.
+    const sock = this.sock
+    const inscrever = (sock as unknown as {
+      subscribeNewsletterUpdates?: (jid: string) => Promise<unknown>
+    })?.subscribeNewsletterUpdates
+    if (!sock || typeof inscrever !== 'function') return
+
+    const canais = this.dbManager
+      .getMonitoredGroups('whatsapp')
+      .filter((g) => g.group_id.endsWith('@newsletter'))
+    if (canais.length === 0) return
+
+    let ok = 0
+    const falhas: string[] = []
+    for (const canal of canais) {
+      // Conexão trocou no meio: o resto do laço seria feito no socket errado.
+      if (this.sock !== sock) break
+      try {
+        await inscrever.call(sock, canal.group_id)
+        ok++
+      } catch (err) {
+        // Falhar aqui não pode derrubar a conexão: o canal continua sendo lido
+        // pelo caminho normal, só sem a inscrição.
+        falhas.push(`${canal.group_name || canal.group_id}: ${(err as Error).message}`)
+      }
+    }
+    log.info(`Inscrição em canais: ${ok} de ${canais.length}`)
+    if (falhas.length > 0) {
+      this.dbManager.addLog({
+        type: 'warning',
+        platform: 'whatsapp',
+        message: `Não consegui me inscrever em ${falhas.length} de ${canais.length} canal(is) monitorado(s)`,
+        details: falhas.join(' | ').substring(0, 400),
+      })
+    }
+  }
+
   private iniciarWatchdogDeBuffer(): void {
     if (this.flushWatchdog) clearInterval(this.flushWatchdog)
     this.avisouBufferTravado = false
@@ -634,11 +708,12 @@ monitorados_salvos=[${salvos}]`,
       maxPerGroup: this.HISTORY_MAX_PER_GROUP,
     })
 
-    for (const msg of toProcess) {
-      if (msg.key?.id) this.processedHistoryIds.add(msg.key.id)
-    }
-    trimProcessedIds(this.processedHistoryIds, this.PROCESSED_IDS_CAP)
-
+    // NÃO marcar os ids como processados aqui. `handleIncomingMessage` passou a
+    // descartar mensagem já vista, então pré-marcar fazia a recuperação inteira
+    // virar no-op: as mensagens eram selecionadas, marcadas, e todas descartadas
+    // na entrada — enquanto a função ainda devolvia `toProcess.length` e o log
+    // dizia "N mensagens reprocessadas". Quem marca agora é só o handler, uma
+    // vez, no ponto em que a mensagem de fato passa.
     if (toProcess.length === 0) return 0
 
     log.info(`Recuperando ${toProcess.length} mensagem(ns) do histórico do WhatsApp (${reason})`)
@@ -759,6 +834,19 @@ monitorados_salvos=[${salvos}]`,
     // do testador: 8 mensagens passando o filtro e com_texto=0 E sem_texto=0
     // ao mesmo tempo, que só é possível se todas saíram aqui.
     if (msg.key.fromMe) { this.recepcao.proprias++; return }
+
+    // A cada reconexão o WhatsApp reentrega o acumulado, e o buffer liberado
+    // pelo watchdog traz o MESMO lote de novo. No log do testador, os mesmos
+    // três links reapareceram em seis reconexões seguidas (07:38, 08:28, 09:18,
+    // 09:46, 10:37, 11:27) — cada uma disparando raspagem e geração de link
+    // outra vez. A deduplicação por URL impedia produto repetido, mas só DEPOIS
+    // de todo o trabalho: dezenas de chamadas de rede desperdiçadas e um log
+    // ilegível. Aqui a mensagem já vista é descartada logo na entrada.
+    const idDaMensagem = msg.key.id
+    if (idDaMensagem && this.processedHistoryIds.has(idDaMensagem)) {
+      this.recepcao.jaVistas++
+      return
+    }
     // Mensagem sem conteúdo é o ponto cego mais perigoso do fluxo: quando a
     // sessão Signal do dispositivo se desencontra, o WhatsApp entrega a
     // mensagem mas o Baileys não consegue decifrar, e ela chega com
@@ -780,6 +868,16 @@ monitorados_salvos=[${salvos}]`,
     // (viewOnceMessage/V2) e documento-com-legenda. Sem desembrulhar, os 3
     // campos abaixo ficam todos undefined e a mensagem passa batida com
     // texto vazio — sem log nenhum, porque essa função retorna cedo demais.
+    // Só agora o id entra no set. Marcá-lo antes do teste acima faria a
+    // mensagem que chegou como CIPHERTEXT queimar o id — e o Baileys, ao pedir
+    // reenvio ao remetente, reemite a MESMA mensagem já decifrada com o mesmo
+    // `key.id`. Ela seria descartada aqui, anulando justamente o mecanismo que
+    // a 1.8.0 ajustou (retryRequestDelayMs de 3s, 8 tentativas).
+    if (idDaMensagem) {
+      this.processedHistoryIds.add(idDaMensagem)
+      trimProcessedIds(this.processedHistoryIds, this.PROCESSED_IDS_CAP)
+    }
+
     const content = this.unwrapMessage(msg.message)
     // Grupo de ofertas manda o link na legenda de mídia tanto quanto em texto
     // solto — vídeo e documento estavam de fora e sumiam sem rastro.

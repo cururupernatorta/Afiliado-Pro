@@ -31,6 +31,11 @@ const isDev = !app.isPackaged
 // Garante que o produto tem um link de afiliado real antes de montar a mensagem —
 // usada tanto no envio de verdade quanto no preview, pra que o preview nunca mostre
 // o link original (não monetizado) quando o envio real vai gerar um afiliado.
+// Produtos cujo link do Mercado Livre já foi regerado (ou tentado) nesta
+// sessão. Some quando o app fecha, que é o comportamento desejado: se o
+// usuário conectar a conta do ML depois, a próxima abertura tenta de novo.
+const mlLinkJaRegenerado = new Set<number>()
+
 async function ensureAffiliateUrl(product: { id?: number; affiliate_url?: string; original_url: string }): Promise<string> {
   const store = affiliateManager.detectStore(product.original_url)
 
@@ -40,9 +45,20 @@ async function ensureAffiliateUrl(product: { id?: number; affiliate_url?: string
   // tudo que a busca automática pegou antes do login continuava saindo sem a
   // vitrine, mesmo depois de conectar. Aqui essa conversão é refeita uma vez,
   // e só pro Mercado Livre com a conta conectada.
-  const linkAntigoDoML =
-    store === 'mercado_livre' && !!product.affiliate_url && !product.affiliate_url.includes('meli.la')
+  // A condição antiga era "não contém meli.la". Ela pulava justamente o caso
+  // pior: um produto capturado de grupo antes da v1.6.3 ficou com o `meli.la`
+  // de OUTRO afiliado gravado, passava no teste e era republicado para sempre —
+  // mandando a comissão para o concorrente. Não dá para distinguir o link dele
+  // do nosso olhando o encurtador, então regeramos e pronto: gerar a partir da
+  // URL canônica sempre produz o link do usuário.
+  //
+  // Uma vez por produto por sessão. Antes não havia marca nenhuma e, com a
+  // conta do ML desconectada, cada envio repetia a tentativa (rede + janela
+  // oculta) para sempre.
+  const jaTentado = product.id != null && mlLinkJaRegenerado.has(product.id)
+  const linkAntigoDoML = store === 'mercado_livre' && !!product.affiliate_url && !jaTentado
   if (linkAntigoDoML) {
+    if (product.id != null) mlLinkJaRegenerado.add(product.id)
     try {
       const novo = await affiliateManager.mercadoLivreLink.generate(
         product.original_url,
