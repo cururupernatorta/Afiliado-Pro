@@ -64,6 +64,7 @@ export class WhatsAppManager {
     flushesForcados: 0,
     proprias: 0,
     jaVistas: 0,
+    reenviosPedidos: 0,
     aposFiltroDeTipo: 0,
     semConteudo: 0,
     stubs: {} as Record<string, number>,
@@ -84,6 +85,8 @@ export class WhatsAppManager {
   private avisouMensagemPropria = new Set<string>()
   // Ate 3 amostras por chat - ver diagnosticarMensagemIlegivel.
   private amostrasIlegiveis = new Map<string, number>()
+  // Teto de pedidos de reenvio por janela de relatorio - ver pedirReenvio.
+  private readonly MAX_REENVIOS_POR_JANELA = 15
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
 
@@ -147,12 +150,12 @@ export class WhatsAppManager {
       message: r.mensagens === 0 && monitorados.length > 0
         ? `Nenhuma mensagem recebida do WhatsApp nos últimos 30 min (${monitorados.length} grupo(s)/canal(is) monitorado(s))`
         : `Recepção do WhatsApp nos últimos 30 min: ${r.mensagens} mensagem(ns), ${r.deGrupoMonitorado} de grupo monitorado`,
-      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, ja_vistas=${r.jaVistas}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
+      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, ja_vistas=${r.jaVistas}, reenvios_pedidos=${r.reenviosPedidos}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
 chats_que_mandaram=[${chats}]
 monitorados_salvos=[${salvos}]`,
     })
 
-    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, reenviosPedidos: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
   }
 
   async connect(): Promise<void> {
@@ -909,16 +912,70 @@ monitorados_salvos=[${salvos}]`,
   }
 
   /**
+   * Pede ao WhatsApp que reenvie uma mensagem que chegou ilegivel.
+   *
+   * ATENCAO ao mexer aqui: o Baileys JA chama `requestPlaceholderResend`
+   * sozinho em dois caminhos - dentro de `sendRetryRequest` quando e a primeira
+   * retentativa, e quando o no chega marcado como `unavailable` sem bloco de
+   * criptografia. Ele ainda dedupa por id num `placeholderResendCache` interno,
+   * entao nos casos que ele cobre esta chamada retorna de imediato sem fazer
+   * nada. Ou seja: isto e RESERVA, nao o conserto principal.
+   *
+   * Existe porque nao esta claro se mensagem de canal (@newsletter) passa por
+   * algum desses dois caminhos - a documentacao do Baileys nao cobre canais, e
+   * o caso do testador e justamente um canal que entrega 100% das mensagens
+   * sem decifrar. Se passar, esta chamada e inofensiva; se nao passar, e a
+   * unica que pede o reenvio.
+   *
+   * Nao e garantia de nada: o pedido vai para o aparelho principal e a propria
+   * implementacao registra "Phone possibly offline" quando nao ha resposta em
+   * 15 segundos. O contador `reenvios_pedidos` do relatorio mede se adiantou.
+   *
+   * Com teto por janela: um canal que entrega 26 mensagens ilegiveis a cada 30
+   * minutos viraria 26 pedidos, e martelar o servidor e o tipo de coisa que
+   * derruba sessao.
+   */
+  private async pedirReenvio(msg: proto.IWebMessageInfo): Promise<void> {
+    const jid = msg.key.remoteJid
+    if (!jid || !msg.key.id) return
+    if (this.recepcao.reenviosPedidos >= this.MAX_REENVIOS_POR_JANELA) return
+    if (!this.dbManager.getMonitoredGroups('whatsapp').some((g) => g.group_id === jid)) return
+
+    const pedir = (this.sock as unknown as {
+      requestPlaceholderResend?: (key: proto.IMessageKey) => Promise<string | undefined>
+    })?.requestPlaceholderResend
+    if (typeof pedir !== 'function') return
+
+    this.recepcao.reenviosPedidos++
+    try {
+      await pedir.call(this.sock, msg.key)
+    } catch (err) {
+      log.warn('Falha ao pedir reenvio de mensagem ilegivel:', (err as Error).message)
+    }
+  }
+
+  /**
    * Registra a forma crua de uma mensagem que chegou ilegivel, para descobrir
    * o que ela realmente e.
    *
    * Um canal de um testador entrega 100% das mensagens assim - 9/9, 16/16,
-   * 22/22, 26/26 em todas as janelas medidas - enquanto os outros dois canais
-   * dele decifram normalmente. Hoje so sabemos que `msg.message` vem nulo com
-   * `messageStubType` 2 (CIPHERTEXT). Isso pode ser criptografia de fato, ou um
-   * formato de canal que esta versao do Baileys nao sabe montar. Sao consertos
-   * completamente diferentes, e sem saber qual e a proxima tentativa seria
-   * chute - foi o que ja aconteceu duas vezes neste caso.
+   * 22/22, 26/26, 30/30 em todas as janelas medidas - enquanto os outros canais
+   * dele decifram normalmente, e no mesmo relatorio status e grupos comuns
+   * chegam inteiros. Nao e sessao corrompida: e aquele canal.
+   *
+   * O campo que decide esta em `messageStubParameters`. A fonte do Baileys
+   * 6.7.24 (Utils/decode-wa-message.js) marca CIPHERTEXT por DOIS caminhos
+   * diferentes, e o parametro diz qual foi:
+   *
+   *   - a mensagem do erro real, quando decifrar falhou de verdade;
+   *   - "Message absent from node", quando o `<message>` chegou SEM nenhum
+   *     bloco `enc` nem `plaintext` - ou seja, nao houve o que decifrar.
+   *
+   * Vale lembrar que conteudo de canal viaja em `plaintext`, nao cifrado. Entao
+   * o segundo caso e o esperado aqui, e ele nao e problema de criptografia: e
+   * mensagem chegando sem corpo, que se resolve BUSCANDO o conteudo
+   * (`newsletterFetchMessages`), nao pedindo redecifrar. Sao consertos opostos,
+   * e por isso este log grava o parametro em vez de so contar quantos sao.
    *
    * Tres amostras por chat por sessao: o suficiente para ver o padrao, sem
    * transformar o log em despejo.
@@ -942,7 +999,9 @@ monitorados_salvos=[${salvos}]`,
       details: [
         'chat=' + jid,
         'stubType=' + String(msg.messageStubType ?? '-'),
-        'stubParams=' + String(msg.messageStubParameters?.length ?? 0),
+        // Este campo e o que separa os dois casos do Baileys - ver o comentario do metodo.
+        'motivo=' + JSON.stringify(msg.messageStubParameters ?? []).substring(0, 200),
+        'server_id=' + String((msg.key as { server_id?: unknown }).server_id ?? '-'),
         'campos_da_mensagem=[' + semValorNulo(msg).join(',') + ']',
         'campos_da_chave=[' + semValorNulo(msg.key).join(',') + ']',
         'status=' + String(msg.status ?? '-'),
@@ -989,6 +1048,7 @@ monitorados_salvos=[${salvos}]`,
         this.recepcao.stubs[nome] = (this.recepcao.stubs[nome] ?? 0) + 1
       }
       this.diagnosticarMensagemIlegivel(msg)
+      void this.pedirReenvio(msg)
       return
     }
     // Grupo grande de ofertas costuma ter mensagens temporárias ativadas —
