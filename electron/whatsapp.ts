@@ -1,4 +1,4 @@
-import { makeWASocket, DisconnectReason, useMultiFileAuthState, proto } from '@whiskeysockets/baileys'
+import { makeWASocket, DisconnectReason, useMultiFileAuthState, proto, getAllBinaryNodeChildren } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import path from 'path'
 import fs from 'fs'
@@ -87,6 +87,12 @@ export class WhatsAppManager {
   private amostrasIlegiveis = new Map<string, number>()
   // Teto de pedidos de reenvio por janela de relatorio - ver pedirReenvio.
   private readonly MAX_REENVIOS_POR_JANELA = 15
+  // Canais cujo conteudo precisa ser BUSCADO - ver buscarConteudoDeCanais.
+  private canaisParaBuscar = new Set<string>()
+  private buscaCanalTimer: NodeJS.Timeout | null = null
+  private jaLogueiFormatoDoCanal = false
+  private readonly BUSCA_CANAL_DEBOUNCE_MS = 5000
+  private readonly BUSCA_CANAL_QUANTIDADE = 20
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
 
@@ -370,7 +376,28 @@ monitorados_salvos=[${salvos}]`,
       // Sincronização de histórico: é por aqui que chega o que passou nos
       // grupos enquanto o app estava fora do ar. Guarda tudo no buffer (pra
       // quem for monitorado depois) e já processa o que é de grupo monitorado.
+      // Este listener e a UNICA porta por onde a resposta da varredura entra:
+      // `fetchMessageHistory` so pede, quem entrega e este evento. Ele nao
+      // logava nada, e por isso "a varredura nao pegou nada" era ambiguo entre
+      // dois casos opostos - o WhatsApp nunca respondeu, ou respondeu e o que
+      // veio nao servia. Sem separar os dois, a proxima tentativa seria chute.
       this.sock.ev.on('messaging-history.set', async ({ messages }) => {
+        const porChat: Record<string, number> = {}
+        for (const msg of messages) {
+          const jid = msg.key?.remoteJid || 'sem-jid'
+          porChat[jid] = (porChat[jid] ?? 0) + 1
+        }
+        const semCorpo = messages.filter((msg) => !msg.message).length
+        this.dbManager.addLog({
+          type: 'info',
+          platform: 'whatsapp',
+          message: `WhatsApp respondeu com histórico: ${messages.length} mensagem(ns)`,
+          details: [
+            'mensagens=' + String(messages.length),
+            'sem_corpo=' + String(semCorpo),
+            'de=[' + Object.entries(porChat).map(([j, n]) => j + '=' + String(n)).join(', ') + ']',
+          ].join(' | ').substring(0, 900),
+        })
         this.bufferHistoryMessages(messages)
         await this.recoverMonitoredFromHistory(messages, 'reconexão')
       })
@@ -955,6 +982,146 @@ monitorados_salvos=[${salvos}]`,
   }
 
   /**
+   * Busca o conteudo das mensagens de um canal cujo corpo nao veio.
+   *
+   * ESTE E o conserto do canal do testador, e nao adivinhacao: o log da 1.8.4
+   * fechou a questao. Toda mensagem daquele canal chega com
+   * `motivo=["Message absent from node"]` e um `server_id` - ou seja, o
+   * `<message>` vem SEM bloco `enc` e SEM bloco `plaintext`. Nao ha falha de
+   * criptografia nenhuma; conteudo de canal nem viaja cifrado, viaja em
+   * `plaintext`. O que chega e so o aviso de que existe mensagem nova, com o
+   * numero dela. O corpo tem que ser pedido.
+   *
+   * Por isso pedir redecifrar (`requestPlaceholderResend`) nunca ia resolver:
+   * responde a pergunta errada.
+   *
+   * Junta os canais numa janela curta antes de pedir, porque um canal entrega
+   * dezenas de avisos em rajada e cada aviso viraria um pedido.
+   */
+  private agendarBuscaDeCanal(jid: string): void {
+    if (!jid.endsWith('@newsletter')) return
+    if (!this.dbManager.getMonitoredGroups('whatsapp').some((g) => g.group_id === jid)) return
+    this.canaisParaBuscar.add(jid)
+    if (this.buscaCanalTimer) return
+    this.buscaCanalTimer = setTimeout(() => {
+      this.buscaCanalTimer = null
+      void this.buscarConteudoDeCanais()
+    }, this.BUSCA_CANAL_DEBOUNCE_MS)
+  }
+
+  private async buscarConteudoDeCanais(): Promise<void> {
+    const canais = [...this.canaisParaBuscar]
+    this.canaisParaBuscar.clear()
+    const sock = this.sock
+    const buscar = (sock as unknown as {
+      newsletterFetchMessages?: (jid: string, count: number, since?: number, after?: number) => Promise<unknown>
+    })?.newsletterFetchMessages
+    if (!sock || typeof buscar !== 'function' || canais.length === 0) return
+
+    for (const jid of canais) {
+      // Conexao trocou no meio: o resto seria pedido no socket errado.
+      if (this.sock !== sock) return
+      try {
+        const resposta = await buscar.call(sock, jid, this.BUSCA_CANAL_QUANTIDADE)
+        const mensagens = this.extrairMensagensDeCanal(jid, resposta)
+
+        // Se nao veio nada, o formato da resposta e diferente do que este
+        // parser espera - e sem registrar a forma dela a proxima tentativa
+        // seria chute de novo, que e exatamente o que custou caro neste caso.
+        if (mensagens.length === 0 && !this.jaLogueiFormatoDoCanal) {
+          this.jaLogueiFormatoDoCanal = true
+          this.dbManager.addLog({
+            type: 'warning',
+            platform: 'whatsapp',
+            message: 'Busquei o conteudo do canal mas nao reconheci a resposta',
+            details: ('canal=' + jid + ' | forma=' + this.descreverNo(resposta)).substring(0, 900),
+          })
+          continue
+        }
+
+        let aproveitadas = 0
+        for (const msg of mensagens) {
+          const id = msg.key?.id
+          if (id && this.processedHistoryIds.has(id)) continue
+          aproveitadas++
+          await this.handleIncomingMessage(msg)
+        }
+        if (aproveitadas > 0) {
+          this.dbManager.addLog({
+            type: 'info',
+            platform: 'whatsapp',
+            message: `Conteúdo buscado do canal: ${aproveitadas} mensagem(ns) recuperada(s)`,
+            details: 'canal=' + jid + ' | encontradas=' + String(mensagens.length),
+          })
+        }
+      } catch (err) {
+        this.dbManager.addLog({
+          type: 'warning',
+          platform: 'whatsapp',
+          message: 'Não consegui buscar o conteúdo de um canal monitorado',
+          details: ('canal=' + jid + ' | erro=' + (err as Error).message).substring(0, 400),
+        })
+      }
+    }
+  }
+
+  /**
+   * Monta mensagens a partir da resposta crua do `newsletterFetchMessages`.
+   *
+   * A resposta e um no binario e o Baileys nao a interpreta. A forma exata nao
+   * esta documentada, entao em vez de assumir um caminho fixo o parser desce a
+   * arvore inteira e aceita qualquer no que carregue um filho `plaintext` -
+   * conteudo de canal e plaintext, entao esse e o sinal confiavel, venha ele
+   * dentro de `message_updates`, de `messages` ou de outro invólucro.
+   */
+  private extrairMensagensDeCanal(jid: string, node: unknown): proto.IWebMessageInfo[] {
+    const encontradas: proto.IWebMessageInfo[] = []
+
+    const desce = (atual: unknown, paiAttrs: Record<string, string>): void => {
+      if (!atual || typeof atual !== 'object') return
+      const no = atual as { tag?: string; attrs?: Record<string, string>; content?: unknown }
+      const attrs = { ...paiAttrs, ...(no.attrs ?? {}) }
+
+      if (no.tag === 'plaintext' && no.content instanceof Uint8Array) {
+        try {
+          const corpo = proto.Message.decode(no.content)
+          const serverId = attrs.server_id ?? attrs.id
+          encontradas.push({
+            key: {
+              remoteJid: jid,
+              fromMe: false,
+              id: attrs.id ?? ('SRV' + String(serverId)),
+              ...(serverId ? { server_id: serverId } : {}),
+            },
+            messageTimestamp: Number(attrs.t) || Math.floor(Date.now() / 1000),
+            message: corpo,
+            broadcast: true,
+          } as proto.IWebMessageInfo)
+        } catch (err) {
+          log.warn('Conteúdo de canal não decodificou:', (err as Error).message)
+        }
+        return
+      }
+
+      for (const filho of getAllBinaryNodeChildren(no as never)) desce(filho, attrs)
+    }
+
+    desce(node, {})
+    return encontradas
+  }
+
+  /** Resumo da forma de um no binario, para quando o parser nao reconhece. */
+  private descreverNo(node: unknown, profundidade = 0): string {
+    if (!node || typeof node !== 'object' || profundidade > 3) return '?'
+    const no = node as { tag?: string; attrs?: Record<string, string>; content?: unknown }
+    const filhos = getAllBinaryNodeChildren(no as never)
+    const dentro = filhos.length > 0
+      ? '(' + filhos.slice(0, 6).map((f) => this.descreverNo(f, profundidade + 1)).join(',') + ')'
+      : no.content instanceof Uint8Array ? '<bytes>' : ''
+    return String(no.tag ?? '?') + dentro
+  }
+
+  /**
    * Registra a forma crua de uma mensagem que chegou ilegivel, para descobrir
    * o que ela realmente e.
    *
@@ -1048,7 +1215,13 @@ monitorados_salvos=[${salvos}]`,
         this.recepcao.stubs[nome] = (this.recepcao.stubs[nome] ?? 0) + 1
       }
       this.diagnosticarMensagemIlegivel(msg)
-      void this.pedirReenvio(msg)
+      // Canal: o corpo nao veio e precisa ser buscado (o caminho que resolve).
+      // Grupo comum: ai sim e decifração, e o reenvio e o que cabe.
+      if (msg.key.remoteJid?.endsWith('@newsletter')) {
+        this.agendarBuscaDeCanal(msg.key.remoteJid)
+      } else {
+        void this.pedirReenvio(msg)
+      }
       return
     }
     // Grupo grande de ofertas costuma ter mensagens temporárias ativadas —

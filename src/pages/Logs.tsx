@@ -79,8 +79,11 @@ export default function Logs() {
   const handleExport = () => {
     const csv = [
       ['Data', 'Tipo', 'Plataforma', 'Mensagem', 'Detalhes'].join(','),
+      // Formatado, nao cru: `created_at` vem em UTC do banco, e o CSV e lido por
+      // gente comparando com a hora do relogio dela. Entre aspas porque o
+      // formato pt-BR tem virgula entre data e hora.
       ...filteredLogs.map((log) => [
-        log.created_at,
+        `"${formatDate(log.created_at)}"`,
         log.type,
         log.platform || 'system',
         `"${log.message.replace(/"/g, '""')}"`,

@@ -927,15 +927,24 @@ export class DatabaseManager extends EventEmitter {
   }
 
   getLogs(limit: number = 100, offset: number = 0): LogEntry[] {
-    // `CURRENT_TIMESTAMP` do SQLite grava em UTC, e a tela mostrava esse valor
-    // cru — no Brasil o log aparecia 3 horas adiantado. Isso atrapalha o
-    // diagnóstico de verdade: o testador diz "parou às 17h", o log diz 20h, e
-    // são o mesmo instante. Converte na leitura, o que também acerta as linhas
-    // antigas, em vez de mudar a gravação e deixar o banco com dois padrões.
+    // CONVENÇÃO: toda data sai daqui em UTC, exatamente como o SQLite grava
+    // (`CURRENT_TIMESTAMP`). Quem converte para o fuso do usuário é a tela, uma
+    // única vez, via `parseDbDate`.
+    //
+    // Isto já foi `datetime(created_at, 'localtime')`, e o resultado era pior
+    // que o problema original: `parseDbDate` acrescenta "Z" e trata a string
+    // como UTC, então a data já convertida era convertida DE NOVO e a tela de
+    // Logs mostrava tudo 3 horas ATRASADO. Uma linha gravada 23:21 aparecia
+    // como 20:21 — e como o topo da lista parecia velho, dava a impressão de
+    // que o app tinha parado de registrar. Um testador chegou a relatar
+    // exatamente isso ("postam e não aparece nada nos logs") enquanto as
+    // linhas estavam sendo gravadas normalmente.
+    //
+    // As outras tabelas (produtos, fila) sempre devolveram UTC cru. Manter
+    // logs igual às demais é o que faz `parseDbDate` valer para todo mundo.
     return this.db
       .prepare(`
-        SELECT id, type, platform, message, details,
-               datetime(created_at, 'localtime') AS created_at
+        SELECT id, type, platform, message, details, created_at
         FROM logs ORDER BY created_at DESC LIMIT ? OFFSET ?
       `)
       .all(limit, offset) as LogEntry[]
