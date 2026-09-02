@@ -285,6 +285,56 @@ export class ScraperManager {
     return null
   }
 
+  /**
+   * Diz se um link resolvido de agregador esta comprovadamente morto.
+   *
+   * Motivo: `ofertaclick.com.br` publica no proprio `<a href>` links como
+   * `https://link.amazon/B0fAhxcLm`, que respondem 404. Nao e deformacao nossa
+   * - abri a pagina no navegador e o endereco quebrado esta no HTML deles, e o
+   * codigo tem 9 caracteres onde um ASIN da Amazon tem 10. O app copiava
+   * fielmente esse lixo: no banco do dono, 48 dos 104 anuncios enviados
+   * levavam a um link morto. Postar link quebrado para o publico do cliente e
+   * pior do que nao postar nada.
+   *
+   * So devolve `true` para prova de que o endereco nao existe: 404, 410 ou
+   * dominio/conexao inexistente. 403, 429 e 5xx sao resposta de anti-robo ou
+   * instabilidade, NAO prova de link ruim - tratar isso como morto faria a
+   * Amazon e o Mercado Livre derrubarem produto bom sempre que resolvessem
+   * responder com bloqueio, que e exatamente o que eles fazem.
+   */
+  private async linkEstaMorto(url: string): Promise<boolean> {
+    const opcoes = {
+      headers: { 'User-Agent': DESKTOP_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' },
+      timeout: 12000,
+      maxRedirects: 5,
+      validateStatus: () => true,
+    }
+    try {
+      let resposta = await axios.head(url, opcoes)
+      // Muito site recusa HEAD (405/501) sem que o endereco seja invalido.
+      if (resposta.status === 405 || resposta.status === 501) {
+        resposta = await axios.get(url, opcoes)
+      }
+      return resposta.status === 404 || resposta.status === 410
+    } catch (err) {
+      const codigo = (err as { code?: string }).code
+      return codigo === 'ENOTFOUND' || codigo === 'ECONNREFUSED'
+    }
+  }
+
+  /** Confere e registra: link morto vira recusa visivel, nao sumico calado. */
+  private async recusarSeMorto(origem: string, destino: string): Promise<boolean> {
+    if (!(await this.linkEstaMorto(destino))) return false
+    log.warn(`Agregador devolveu link morto: ${origem} -> ${destino}`)
+    this.dbManager.addLog({
+      type: 'warning',
+      platform: 'system',
+      message: 'Oferta descartada: o agregador devolveu um link quebrado',
+      details: `A página ${origem} aponta para ${destino}, que não existe (404). O anúncio não foi publicado para não mandar link morto ao seu grupo.`.substring(0, 500),
+    })
+    return true
+  }
+
   private async resolverAgregadorAgora(url: string): Promise<string | null> {
     // Essas paginas costumam ser client-side: no teste real o `axios` levou
     // HTTP 500 e o navegador carregou normalmente.
@@ -301,7 +351,7 @@ export class ScraperManager {
         if (href && /^https?:\/\//i.test(href)) dosLinks.push(href)
       })
       const doDom = this.primeiroLinkDeLoja(dosLinks)
-      if (doDom) {
+      if (doDom && !(await this.recusarSeMorto(url, doDom))) {
         log.info(`Agregador resolvido pelo botao da pagina: ${url.substring(0, 45)} -> ${doDom.substring(0, 70)}`)
         return doDom
       }
@@ -310,7 +360,7 @@ export class ScraperManager {
       // existe dentro de um bloco de script, com as barras escapadas.
       const limpo = html.replace(/\\u002F/gi, '/').replace(/&amp;/g, '&')
       const doHtml = this.primeiroLinkDeLoja(limpo.match(/https?:\/\/[^"'\s\\<>)\]]+/gi) ?? [])
-      if (doHtml) {
+      if (doHtml && !(await this.recusarSeMorto(url, doHtml))) {
         log.info(`Agregador resolvido pelo HTML: ${url.substring(0, 45)} -> ${doHtml.substring(0, 70)}`)
         return doHtml
       }
