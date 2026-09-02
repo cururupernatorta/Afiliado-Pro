@@ -63,6 +63,7 @@ export default function Produtos() {
   const [searchTerm, setSearchTerm]       = useState('')
   const [selectedStore, setSelectedStore] = useState<string>('all')
   const [selectedProducts, setSelectedProducts] = useState<number[]>([])
+  const [isDeletingMany, setIsDeletingMany] = useState(false)
 
   // modal adicionar
   const [showAddModal, setShowAddModal]   = useState(false)
@@ -186,7 +187,40 @@ export default function Produtos() {
     removeProduct(id)
   }
 
+  // Exclusao em lote. O aviso diz o numero e avisa do efeito colateral: o
+  // historico de envio guarda o id do produto, entao um item apagado que volte
+  // a ser capturado vira id novo e pode ser publicado outra vez.
+  const handleDeleteSelected = async () => {
+    const quantos = selectedProducts.length
+    if (quantos === 0 || isDeletingMany) return
+    const aviso = quantos === 1
+      ? 'Excluir o produto selecionado?'
+      : `Excluir os ${quantos} produtos selecionados?`
+    if (!confirm(`${aviso}
+
+Se alguma dessas ofertas for capturada de novo mais tarde, ela poderá ser publicada outra vez.`)) return
+
+    setIsDeletingMany(true)
+    try {
+      await window.electronAPI.productsDeleteMany(selectedProducts)
+      // So mexe na tela depois que o banco confirmou, senao um erro deixaria a
+      // lista mostrando itens que continuam existindo.
+      selectedProducts.forEach((id) => removeProduct(id))
+      setSelectedProducts([])
+    } catch (err) {
+      alert(`Não consegui excluir: ${(err as Error).message}`)
+    } finally {
+      setIsDeletingMany(false)
+    }
+  }
+
   // ── seleção ────────────────────────────────────────────────────────────────
+  // Compara pelos ids que estao VISIVEIS: comparar so o tamanho marcava o
+  // "selecionar tudo" como cheio quando havia selecao de fora do filtro atual.
+  const idsFiltrados = filteredProducts.map((p) => p.id)
+  const todosFiltradosSelecionados =
+    idsFiltrados.length > 0 && idsFiltrados.every((id) => selectedProducts.includes(id))
+
   const toggleSelection = (id: number) => {
     setSelectedProducts((prev) =>
       prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
@@ -330,6 +364,20 @@ export default function Produtos() {
               Enviar ({selectedProducts.length})
             </motion.button>
           )}
+          {selectedProducts.length > 0 && (
+            <motion.button
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              onClick={handleDeleteSelected}
+              disabled={isDeletingMany}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/10 text-destructive border border-destructive/30 text-sm font-medium hover:bg-destructive/20 transition-colors disabled:opacity-50"
+            >
+              {isDeletingMany
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <Trash2 className="w-4 h-4" />}
+              Excluir ({selectedProducts.length})
+            </motion.button>
+          )}
           <button
             onClick={() => setShowAddModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
@@ -349,15 +397,15 @@ export default function Produtos() {
                 <th className="px-4 py-3 text-left">
                   <button
                     onClick={() => {
-                      if (selectedProducts.length === filteredProducts.length) {
+                      if (todosFiltradosSelecionados) {
                         setSelectedProducts([])
                       } else {
-                        setSelectedProducts(filteredProducts.map((p) => p.id))
+                        setSelectedProducts(idsFiltrados)
                       }
                     }}
                     className="text-muted-foreground hover:text-foreground transition-colors"
                   >
-                    {selectedProducts.length === filteredProducts.length && filteredProducts.length > 0
+                    {todosFiltradosSelecionados
                       ? <CheckSquare className="w-5 h-5" />
                       : <Square className="w-5 h-5" />}
                   </button>

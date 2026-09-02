@@ -40,6 +40,7 @@ export interface ElectronAPI {
   productCreate: (data: any) => Promise<any>
   productUpdate: (id: number, data: any) => Promise<void>
   productDelete: (id: number) => Promise<void>
+  productsDeleteMany: (ids: number[]) => Promise<number>
   productScrape: (url: string) => Promise<any>
   scrapeRunNow: () => Promise<{ ok: boolean; novas?: number; erro?: string }>
   whatsappReceptionNow: () => Promise<{ mensagens: number; deGrupoMonitorado: number; proprias: number; jaVistas: number; naoDecifradas: number; comTexto: number; comLink: number; flushesForcados: number; monitorados: number; porChat: { jid: string; n: number }[] }>
@@ -125,6 +126,7 @@ const api: ElectronAPI = {
   productCreate: (data) => ipcRenderer.invoke('product:create', data),
   productUpdate: (id, data) => ipcRenderer.invoke('product:update', id, data),
   productDelete: (id) => ipcRenderer.invoke('product:delete', id),
+  productsDeleteMany: (ids) => ipcRenderer.invoke('product:delete-many', ids),
   productScrape: (url) => ipcRenderer.invoke('product:scrape', url),
   scrapeRunNow: () => ipcRenderer.invoke('scrape:run-now'),
   whatsappReceptionNow: () => ipcRenderer.invoke('whatsapp:reception-now'),

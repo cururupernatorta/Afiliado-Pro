@@ -688,6 +688,31 @@ export class DatabaseManager extends EventEmitter {
     this.db.prepare('DELETE FROM products WHERE id = ?').run(id)
   }
 
+  /**
+   * Apaga varios produtos de uma vez.
+   *
+   * Numa transacao, e nao num laco de `deleteProduct`: apagar 48 itens um a um
+   * sao 48 gravacoes em disco, e uma falha no meio deixaria metade apagada sem
+   * o usuario saber quais. Aqui ou vai tudo ou nao vai nada.
+   *
+   * O `send_history` NAO e tocado de proposito. Ele nao tem chave estrangeira
+   * para `products`, entao nada impede a exclusao — mas ele e tambem o que
+   * mede o que ja foi enviado para cada grupo. Apagar o historico junto faria
+   * ofertas antigas poderem ser republicadas; deixando-o, as linhas ficam
+   * orfas e inofensivas.
+   */
+  deleteProducts(ids: number[]): number {
+    const limpos = [...new Set(ids)].filter((id) => Number.isInteger(id))
+    if (limpos.length === 0) return 0
+    const apagar = this.db.prepare('DELETE FROM products WHERE id = ?')
+    const emLote = this.db.transaction((lista: number[]) => {
+      let n = 0
+      for (const id of lista) n += apagar.run(id).changes
+      return n
+    })
+    return emLote(limpos)
+  }
+
   getConfig(): Config {
     const row = this.db.prepare('SELECT * FROM config WHERE id = 1').get() as any
     if (!row) {

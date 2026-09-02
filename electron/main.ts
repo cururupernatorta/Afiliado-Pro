@@ -587,6 +587,7 @@ const setupIpcHandlers = (): void => {
   })
   ipcMain.handle('product:update', (_, id: number, data) => dbManager.updateProduct(id, data))
   ipcMain.handle('product:delete', (_, id: number) => dbManager.deleteProduct(id))
+  ipcMain.handle('product:delete-many', (_, ids: number[]) => dbManager.deleteProducts(ids))
   ipcMain.handle('product:scrape', (_, url: string) => scraperManager.scrapeProduct(url))
 
   ipcMain.handle('config:get', () => dbManager.getConfig())

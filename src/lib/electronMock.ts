@@ -40,6 +40,7 @@ export function installElectronMockIfNeeded() {
     productCreate: async (data: any) => ({ id: Date.now(), created_at: new Date().toISOString(), ...data }),
     productUpdate: async () => {},
     productDelete: async () => {},
+    productsDeleteMany: async () => 0,
     productScrape: async () => ({ title: 'Produto de exemplo', price: 99.9, store: 'shopee', original_url: '' }),
     scrapeRunNow: async () => ({ ok: true, novas: 0 }),
     whatsappReceptionNow: async () => ({ mensagens: 12, deGrupoMonitorado: 2, proprias: 3, jaVistas: 0, naoDecifradas: 1, comTexto: 8, comLink: 2, flushesForcados: 1, monitorados: 4, porChat: [] }),
