@@ -91,8 +91,15 @@ export class WhatsAppManager {
   private canaisParaBuscar = new Set<string>()
   private buscaCanalTimer: NodeJS.Timeout | null = null
   private jaLogueiFormatoDoCanal = false
+  // Menor server_id que chegou sem corpo, por canal: e o ponto a partir do
+  // qual o historico precisa ser pedido - ver buscarConteudoDeCanais.
+  private menorServerIdPendente = new Map<string, number>()
   private readonly BUSCA_CANAL_DEBOUNCE_MS = 5000
   private readonly BUSCA_CANAL_QUANTIDADE = 20
+  // O `query` do Baileys espera 60s por padrao e nao aceita prazo por chamada.
+  // 60s travando o laco de busca e tempo demais numa conexao que cai a cada 50
+  // minutos, entao corremos contra um prazo proprio.
+  private readonly BUSCA_CANAL_PRAZO_MS = 20000
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
 
@@ -190,6 +197,29 @@ monitorados_salvos=[${salvos}]`,
         printQRInTerminal: false,
         browser: ['Afiliado Pro', 'Desktop', '1.0'],
         syncFullHistory: false,
+        // ESTE e o motivo de a varredura nunca ter funcionado, em grupo nem em
+        // canal. O Baileys monta o filtro assim (Socket/index.js):
+        //
+        //     if (config.shouldSyncHistoryMessage === undefined)
+        //       newConfig.shouldSyncHistoryMessage = () => !!newConfig.syncFullHistory
+        //
+        // Como nao passavamos nada e `syncFullHistory` e false, o filtro virava
+        // `() => false`. E em Utils/process-message.js a resposta do historico
+        // so vira evento se ele passar:
+        //
+        //     if (process) { ... ev.emit('messaging-history.set', ...) }
+        //
+        // Ou seja: `fetchMessageHistory` pedia, a resposta chegava, e era
+        // jogada fora antes de virar evento. Por isso `messaging-history.set`
+        // nunca disparou e toda varredura terminava em "0 reprocessadas"
+        // depois de mandar os pedidos.
+        //
+        // Aceita SO o que nos mesmos pedimos (ON_DEMAND, tipo 6, que ja consta
+        // em PROCESSABLE_HISTORY_TYPES). Manter `syncFullHistory: false` e o
+        // que evita o outro extremo: pedir o historico inteiro da conta a cada
+        // conexao.
+        shouldSyncHistoryMessage: (msg) =>
+          msg.syncType === proto.Message.HistorySyncNotification.HistorySyncType.ON_DEMAND,
         markOnlineOnConnect: false,
         // Quando o Baileys não consegue decifrar, ele pede reenvio ao
         // remetente. O padrão é 250 ms, e no log de um testador 25 de 29
@@ -453,11 +483,16 @@ monitorados_salvos=[${salvos}]`,
 
     let ok = 0
     const falhas: string[] = []
+    // O `subscribeNewsletterUpdates` devolve `{ duration }` - a inscricao VENCE.
+    // Isso nunca foi registrado, entao nao se sabia se ela valia 5 minutos ou o
+    // dia todo, nem se era por isso que o conteudo parava de vir.
+    const duracoes: string[] = []
     for (const canal of canais) {
       // Conexão trocou no meio: o resto do laço seria feito no socket errado.
       if (this.sock !== sock) break
       try {
-        await inscrever.call(sock, canal.group_id)
+        const r = (await inscrever.call(sock, canal.group_id)) as { duration?: string } | null
+        duracoes.push(`${canal.group_id.split('@')[0]}=${r?.duration ?? 'sem duracao'}`)
         ok++
       } catch (err) {
         // Falhar aqui não pode derrubar a conexão: o canal continua sendo lido
@@ -466,6 +501,12 @@ monitorados_salvos=[${salvos}]`,
       }
     }
     log.info(`Inscrição em canais: ${ok} de ${canais.length}`)
+    this.dbManager.addLog({
+      type: 'info',
+      platform: 'whatsapp',
+      message: `Inscrito em ${ok} de ${canais.length} canal(is) para receber atualizações`,
+      details: ('validade=[' + duracoes.join(', ') + ']').substring(0, 500),
+    })
     if (falhas.length > 0) {
       this.dbManager.addLog({
         type: 'warning',
@@ -981,6 +1022,15 @@ monitorados_salvos=[${salvos}]`,
     }
   }
 
+  /** Corre uma promessa contra um prazo, sem deixar o temporizador vazando. */
+  private comPrazo<T>(promessa: Promise<T>, ms: number): Promise<T> {
+    let marcador: NodeJS.Timeout
+    const prazo = new Promise<never>((_, rejeitar) => {
+      marcador = setTimeout(() => rejeitar(new Error(`sem resposta em ${ms / 1000}s`)), ms)
+    })
+    return Promise.race([promessa, prazo]).finally(() => clearTimeout(marcador)) as Promise<T>
+  }
+
   /**
    * Busca o conteudo das mensagens de um canal cujo corpo nao veio.
    *
@@ -998,10 +1048,18 @@ monitorados_salvos=[${salvos}]`,
    * Junta os canais numa janela curta antes de pedir, porque um canal entrega
    * dezenas de avisos em rajada e cada aviso viraria um pedido.
    */
-  private agendarBuscaDeCanal(jid: string): void {
+  private agendarBuscaDeCanal(jid: string, serverId?: unknown): void {
     if (!jid.endsWith('@newsletter')) return
     if (!this.dbManager.getMonitoredGroups('whatsapp').some((g) => g.group_id === jid)) return
     this.canaisParaBuscar.add(jid)
+
+    // Guarda o MENOR: o pedido tem que comecar antes da mensagem mais antiga
+    // que ficou faltando, senao o buraco no meio nunca e coberto.
+    const numero = Number(serverId)
+    if (Number.isFinite(numero) && numero > 0) {
+      const atual = this.menorServerIdPendente.get(jid)
+      if (atual == null || numero < atual) this.menorServerIdPendente.set(jid, numero)
+    }
     if (this.buscaCanalTimer) return
     this.buscaCanalTimer = setTimeout(() => {
       this.buscaCanalTimer = null
@@ -1021,8 +1079,21 @@ monitorados_salvos=[${salvos}]`,
     for (const jid of canais) {
       // Conexao trocou no meio: o resto seria pedido no socket errado.
       if (this.sock !== sock) return
+      // `after` = a partir de qual mensagem. Sem ele o pedido e "me manda as
+      // ultimas N" sem dizer de onde, e no log do testador esse formato deu
+      // "Timed Out" em 5 de 5 tentativas - o servidor simplesmente nao
+      // respondeu. Como os avisos vazios trazem `server_id`, da para pedir o
+      // trecho exato que faltou. Um a menos porque a propria mensagem que
+      // faltou precisa entrar no resultado.
+      const menor = this.menorServerIdPendente.get(jid)
+      const depoisDe = menor != null && menor > 1 ? menor - 1 : undefined
+      const pedido = 'count=' + String(this.BUSCA_CANAL_QUANTIDADE) + ', after=' + String(depoisDe ?? '-')
       try {
-        const resposta = await buscar.call(sock, jid, this.BUSCA_CANAL_QUANTIDADE)
+        const resposta = await this.comPrazo(
+          buscar.call(sock, jid, this.BUSCA_CANAL_QUANTIDADE, undefined, depoisDe),
+          this.BUSCA_CANAL_PRAZO_MS,
+        )
+        this.menorServerIdPendente.delete(jid)
         const mensagens = this.extrairMensagensDeCanal(jid, resposta)
 
         // Se nao veio nada, o formato da resposta e diferente do que este
@@ -1034,7 +1105,7 @@ monitorados_salvos=[${salvos}]`,
             type: 'warning',
             platform: 'whatsapp',
             message: 'Busquei o conteudo do canal mas nao reconheci a resposta',
-            details: ('canal=' + jid + ' | forma=' + this.descreverNo(resposta)).substring(0, 900),
+            details: ('canal=' + jid + ' | pedido=' + pedido + ' | forma=' + this.descreverNo(resposta)).substring(0, 900),
           })
           continue
         }
@@ -1051,7 +1122,7 @@ monitorados_salvos=[${salvos}]`,
             type: 'info',
             platform: 'whatsapp',
             message: `Conteúdo buscado do canal: ${aproveitadas} mensagem(ns) recuperada(s)`,
-            details: 'canal=' + jid + ' | encontradas=' + String(mensagens.length),
+            details: 'canal=' + jid + ' | pedido=' + pedido + ' | encontradas=' + String(mensagens.length),
           })
         }
       } catch (err) {
@@ -1059,7 +1130,7 @@ monitorados_salvos=[${salvos}]`,
           type: 'warning',
           platform: 'whatsapp',
           message: 'Não consegui buscar o conteúdo de um canal monitorado',
-          details: ('canal=' + jid + ' | erro=' + (err as Error).message).substring(0, 400),
+          details: ('canal=' + jid + ' | pedido=' + pedido + ' | erro=' + (err as Error).message).substring(0, 400),
         })
       }
     }
@@ -1218,7 +1289,7 @@ monitorados_salvos=[${salvos}]`,
       // Canal: o corpo nao veio e precisa ser buscado (o caminho que resolve).
       // Grupo comum: ai sim e decifração, e o reenvio e o que cabe.
       if (msg.key.remoteJid?.endsWith('@newsletter')) {
-        this.agendarBuscaDeCanal(msg.key.remoteJid)
+        this.agendarBuscaDeCanal(msg.key.remoteJid, (msg.key as { server_id?: unknown }).server_id)
       } else {
         void this.pedirReenvio(msg)
       }
