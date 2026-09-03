@@ -100,6 +100,9 @@ export class WhatsAppManager {
   // 60s travando o laco de busca e tempo demais numa conexao que cai a cada 50
   // minutos, entao corremos contra um prazo proprio.
   private readonly BUSCA_CANAL_PRAZO_MS = 20000
+  // A inscricao em canal VENCE - ver assinarCanaisMonitorados.
+  private renovarInscricaoTimer: NodeJS.Timeout | null = null
+  private readonly RENOVAR_INSCRICAO_MS = 60000
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
 
@@ -501,12 +504,27 @@ monitorados_salvos=[${salvos}]`,
       }
     }
     log.info(`Inscrição em canais: ${ok} de ${canais.length}`)
-    this.dbManager.addLog({
-      type: 'info',
-      platform: 'whatsapp',
-      message: `Inscrito em ${ok} de ${canais.length} canal(is) para receber atualizações`,
-      details: ('validade=[' + duracoes.join(', ') + ']').substring(0, 500),
-    })
+    // So registra a primeira inscricao de cada conexao: com a renovacao de
+    // minuto em minuto, logar sempre encheria a tela de Logs sozinho.
+    if (!this.renovarInscricaoTimer) {
+      this.dbManager.addLog({
+        type: 'info',
+        platform: 'whatsapp',
+        message: `Inscrito em ${ok} de ${canais.length} canal(is) para receber atualizações`,
+        details: ('validade=[' + duracoes.join(', ') + '] — renovando a cada 60s').substring(0, 500),
+      })
+    }
+
+    // O servidor devolveu duracao 90 no log do testador: a inscricao vale 90
+    // SEGUNDOS. Como so se assinava uma vez, ao conectar, ela vencia um minuto
+    // e meio depois e o resto da conexao - que dura ~50 minutos - ficava sem
+    // ela. E forte candidato a explicar por que o conteudo de canal chega
+    // vazio: sem inscricao viva, o servidor manda o aviso da mensagem nova mas
+    // nao o corpo. Renova antes de vencer, com folga.
+    if (this.renovarInscricaoTimer) clearTimeout(this.renovarInscricaoTimer)
+    this.renovarInscricaoTimer = setTimeout(() => {
+      if (this.sock === sock && this.status === 'connected') void this.assinarCanaisMonitorados()
+    }, this.RENOVAR_INSCRICAO_MS)
     if (falhas.length > 0) {
       this.dbManager.addLog({
         type: 'warning',
@@ -550,6 +568,9 @@ monitorados_salvos=[${salvos}]`,
   private encerrarSocketAnterior(): void {
     if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
     if (this.estabilidadeTimer) { clearTimeout(this.estabilidadeTimer); this.estabilidadeTimer = null }
+    // Zerar aqui tambem faz a proxima conexao voltar a registrar a inscricao
+    // (o log dela e gateado por este temporizador estar nulo).
+    if (this.renovarInscricaoTimer) { clearTimeout(this.renovarInscricaoTimer); this.renovarInscricaoTimer = null }
     if (!this.sock) return
     const antigo = this.sock
     this.sock = null
@@ -597,6 +618,9 @@ monitorados_salvos=[${salvos}]`,
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
     if (this.estabilidadeTimer) { clearTimeout(this.estabilidadeTimer); this.estabilidadeTimer = null }
+    // Zerar aqui tambem faz a proxima conexao voltar a registrar a inscricao
+    // (o log dela e gateado por este temporizador estar nulo).
+    if (this.renovarInscricaoTimer) { clearTimeout(this.renovarInscricaoTimer); this.renovarInscricaoTimer = null }
     if (this.sock) {
       try {
         this.sock.end(undefined)
@@ -1181,15 +1205,28 @@ monitorados_salvos=[${salvos}]`,
     return encontradas
   }
 
-  /** Resumo da forma de um no binario, para quando o parser nao reconhece. */
+  /**
+   * Resumo da forma de um no binario, para quando o parser nao reconhece.
+   *
+   * O limite era 3 e a resposta do canal tem `iq > message_updates > messages >
+   * message > filhos` - exatamente 4. Resultado: o log saiu
+   * `message(?,?,?)`, e aquele `?` nao era tag desconhecida, era o meu proprio
+   * corte. Justamente onde estava a informacao que interessava. Vai fundo o
+   * bastante agora, e diz tambem o NOME dos atributos: e o que separa um
+   * `plaintext` de conteudo de um `views_count` de estatistica.
+   */
   private descreverNo(node: unknown, profundidade = 0): string {
-    if (!node || typeof node !== 'object' || profundidade > 3) return '?'
+    if (!node || typeof node !== 'object' || profundidade > 7) return '...'
     const no = node as { tag?: string; attrs?: Record<string, string>; content?: unknown }
     const filhos = getAllBinaryNodeChildren(no as never)
+    const chaves = Object.keys(no.attrs ?? {})
+    const marca = chaves.length > 0 ? '{' + chaves.slice(0, 6).join(',') + '}' : ''
     const dentro = filhos.length > 0
-      ? '(' + filhos.slice(0, 6).map((f) => this.descreverNo(f, profundidade + 1)).join(',') + ')'
-      : no.content instanceof Uint8Array ? '<bytes>' : ''
-    return String(no.tag ?? '?') + dentro
+      ? '(' + filhos.slice(0, 8).map((f) => this.descreverNo(f, profundidade + 1)).join(',') + ')'
+      : no.content instanceof Uint8Array
+        ? '<' + String(no.content.length) + 'bytes>'
+        : typeof no.content === 'string' ? '<texto>' : ''
+    return String(no.tag ?? 'sem-tag') + marca + dentro
   }
 
   /**
