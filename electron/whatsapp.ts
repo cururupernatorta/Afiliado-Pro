@@ -1225,7 +1225,13 @@ monitorados_salvos=[${salvos}]`,
       ? '(' + filhos.slice(0, 8).map((f) => this.descreverNo(f, profundidade + 1)).join(',') + ')'
       : no.content instanceof Uint8Array
         ? '<' + String(no.content.length) + 'bytes>'
-        : typeof no.content === 'string' ? '<texto>' : ''
+        : typeof no.content === 'string' ? '<texto>'
+          // Explicito de proposito: um `plaintext` sem nada saia igual a um no
+          // comum, e foi quase lido como "conteudo que nao sei ler" quando na
+          // verdade era "o servidor mandou a etiqueta vazia" - conclusoes
+          // opostas. O decodificador do Baileys (WABinary/decode.js) so
+          // preenche `content` quando o no traz dados de fato.
+          : no.content == null ? '<vazio>' : '<' + typeof no.content + '>'
     return String(no.tag ?? 'sem-tag') + marca + dentro
   }
 
