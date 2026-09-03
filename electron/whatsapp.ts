@@ -65,6 +65,12 @@ export class WhatsAppManager {
     proprias: 0,
     jaVistas: 0,
     reenviosPedidos: 0,
+    // Correlacao entre a janela de inscricao e o conteudo chegar - ver
+    // classificarMensagemDeCanal.
+    canalVazioDentro: 0,
+    canalVazioFora: 0,
+    canalTextoDentro: 0,
+    canalTextoFora: 0,
     aposFiltroDeTipo: 0,
     semConteudo: 0,
     stubs: {} as Record<string, number>,
@@ -103,6 +109,10 @@ export class WhatsAppManager {
   // A inscricao em canal VENCE - ver assinarCanaisMonitorados.
   private renovarInscricaoTimer: NodeJS.Timeout | null = null
   private readonly RENOVAR_INSCRICAO_MS = 60000
+  // Instante da ultima inscricao aceita, por canal - ver classificarMensagemDeCanal.
+  private inscritoEm = new Map<string, number>()
+  private jaOlheiEstadoDosCanais = false
+  private readonly JANELA_INSCRICAO_MS = 90000
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
 
@@ -166,12 +176,12 @@ export class WhatsAppManager {
       message: r.mensagens === 0 && monitorados.length > 0
         ? `Nenhuma mensagem recebida do WhatsApp nos últimos 30 min (${monitorados.length} grupo(s)/canal(is) monitorado(s))`
         : `Recepção do WhatsApp nos últimos 30 min: ${r.mensagens} mensagem(ns), ${r.deGrupoMonitorado} de grupo monitorado`,
-      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, ja_vistas=${r.jaVistas}, reenvios_pedidos=${r.reenviosPedidos}, nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
+      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, ja_vistas=${r.jaVistas}, reenvios_pedidos=${r.reenviosPedidos}, canal_janela=[vazio_dentro=${r.canalVazioDentro}, vazio_fora=${r.canalVazioFora}, texto_dentro=${r.canalTextoDentro}, texto_fora=${r.canalTextoFora}], nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
 chats_que_mandaram=[${chats}]
 monitorados_salvos=[${salvos}]`,
     })
 
-    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, reenviosPedidos: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, reenviosPedidos: 0, canalVazioDentro: 0, canalVazioFora: 0, canalTextoDentro: 0, canalTextoFora: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
   }
 
   async connect(): Promise<void> {
@@ -495,6 +505,7 @@ monitorados_salvos=[${salvos}]`,
       if (this.sock !== sock) break
       try {
         const r = (await inscrever.call(sock, canal.group_id)) as { duration?: string } | null
+        this.inscritoEm.set(canal.group_id, Date.now())
         duracoes.push(`${canal.group_id.split('@')[0]}=${r?.duration ?? 'sem duracao'}`)
         ok++
       } catch (err) {
@@ -513,6 +524,42 @@ monitorados_salvos=[${salvos}]`,
         message: `Inscrito em ${ok} de ${canais.length} canal(is) para receber atualizações`,
         details: ('validade=[' + duracoes.join(', ') + '] — renovando a cada 60s').substring(0, 500),
       })
+    }
+
+    // Segunda hipotese, so MEDIDA: canal silenciado ou sessao que nao consta
+    // como seguidora poderiam explicar o corpo nao vir. O `newsletterMetadata`
+    // traz `viewer_metadata` com o papel e o estado de mudo.
+    //
+    // De proposito nao chama `newsletterUnfollow`/`newsletterUnmute` nem
+    // `newsletterFollow`: seguir ou dessilenciar um canal muda a conta de
+    // WhatsApp do usuario de verdade, e isso e decisao dele, nao efeito
+    // colateral de um diagnostico. Se o log mostrar que e isso, a gente pede.
+    if (!this.jaOlheiEstadoDosCanais) {
+      this.jaOlheiEstadoDosCanais = true
+      const meta = (sock as unknown as {
+        newsletterMetadata?: (tipo: string, chave: string) => Promise<unknown>
+      })?.newsletterMetadata
+      if (typeof meta === 'function') {
+        const estados: string[] = []
+        for (const canal of canais) {
+          if (this.sock !== sock) break
+          try {
+            const m = (await this.comPrazo(meta.call(sock, 'jid', canal.group_id), 15000)) as
+              Record<string, unknown> | null
+            const visao = (m?.viewer_metadata ?? {}) as Record<string, unknown>
+            const curto = canal.group_id.split('@')[0]
+            estados.push(`${curto}: papel=${String(visao.role ?? '-')}, mudo=${String(visao.mute ?? '-')}`)
+          } catch (err) {
+            estados.push(`${canal.group_id.split('@')[0]}: erro=${(err as Error).message}`)
+          }
+        }
+        this.dbManager.addLog({
+          type: 'info',
+          platform: 'whatsapp',
+          message: 'Estado dos canais monitorados nesta conta',
+          details: estados.join(' | ').substring(0, 700),
+        })
+      }
     }
 
     // O servidor devolveu duracao 90 no log do testador: a inscricao vale 90
@@ -1236,6 +1283,38 @@ monitorados_salvos=[${salvos}]`,
   }
 
   /**
+   * Mede a hipotese que sobrou de pe sobre o conteudo de canal chegar vazio.
+   *
+   * O que se sabe: a inscricao (`subscribeNewsletterUpdates`) devolve
+   * `duration=90`, ou seja vale 90 SEGUNDOS, e ate a 1.8.8 so era feita uma vez
+   * por conexao - que dura ~50 minutos. A hipotese e que fora dessa janela o
+   * servidor manda so o aviso da mensagem nova, sem corpo.
+   *
+   * O que sustenta a hipotese, e derruba a alternativa: a sessao do testador JA
+   * recebeu conteudo de canal normalmente (01/09 as 18:35, canal Poison, uma
+   * mensagem com texto contada como de grupo monitorado). Entao nao e falta de
+   * permissao nem canal bloqueado - as vezes vem, as vezes nao.
+   *
+   * Isto aqui transforma a hipotese em medicao: cruza "veio vazia ou com texto"
+   * com "dentro ou fora dos 90s da inscricao". Se as vazias se concentrarem
+   * fora e as com texto dentro, a renovacao e o conserto e o assunto acaba. Se
+   * vier vazio dentro da janela tambem, a hipotese morre e o caminho e outro -
+   * que e exatamente o tipo de coisa que estava faltando saber.
+   */
+  private classificarMensagemDeCanal(jid: string | null | undefined, temConteudo: boolean): void {
+    if (!jid || !jid.endsWith('@newsletter')) return
+    const inscrito = this.inscritoEm.get(jid)
+    const dentro = inscrito != null && Date.now() - inscrito <= this.JANELA_INSCRICAO_MS
+    if (temConteudo) {
+      if (dentro) this.recepcao.canalTextoDentro++
+      else this.recepcao.canalTextoFora++
+    } else {
+      if (dentro) this.recepcao.canalVazioDentro++
+      else this.recepcao.canalVazioFora++
+    }
+  }
+
+  /**
    * Registra a forma crua de uma mensagem que chegou ilegivel, para descobrir
    * o que ela realmente e.
    *
@@ -1328,6 +1407,7 @@ monitorados_salvos=[${salvos}]`,
         const nome = String(msg.messageStubType)
         this.recepcao.stubs[nome] = (this.recepcao.stubs[nome] ?? 0) + 1
       }
+      this.classificarMensagemDeCanal(msg.key.remoteJid, false)
       this.diagnosticarMensagemIlegivel(msg)
       // Canal: o corpo nao veio e precisa ser buscado (o caminho que resolve).
       // Grupo comum: ai sim e decifração, e o reenvio e o que cabe.
@@ -1344,6 +1424,8 @@ monitorados_salvos=[${salvos}]`,
     // (viewOnceMessage/V2) e documento-com-legenda. Sem desembrulhar, os 3
     // campos abaixo ficam todos undefined e a mensagem passa batida com
     // texto vazio — sem log nenhum, porque essa função retorna cedo demais.
+    this.classificarMensagemDeCanal(msg.key.remoteJid, true)
+
     // Só agora o id entra no set. Marcá-lo antes do teste acima faria a
     // mensagem que chegou como CIPHERTEXT queimar o id — e o Baileys, ao pedir
     // reenvio ao remetente, reemite a MESMA mensagem já decifrada com o mesmo
