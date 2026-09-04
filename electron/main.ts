@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import path from 'path'
+import fs from 'fs'
 import { DatabaseManager } from './database'
 import { QueueManager, SendProductsExtra } from './queue'
 import { WhatsAppManager } from './whatsapp'
@@ -347,6 +348,38 @@ app.whenReady().then(async () => {
     createWindow()
     createTray()
     setupAutoUpdater()
+
+    // Reconecta o WhatsApp sozinho quando ja existe pareamento salvo.
+    //
+    // Ate aqui `connect()` so era chamado pelo botao "Conectar" da tela de
+    // Conexoes. Ou seja: TODA vez que o processo reiniciava, o app subia
+    // desconectado e ficava assim ate alguem abrir a tela e clicar. E o app
+    // reinicia sozinho a cada atualizacao automatica.
+    //
+    // Foi exatamente o que aconteceu na maquina do dono: a 1.8.9 instalou as
+    // 14:33, o app voltou as 14:34 e passou 95 minutos sem conectar, sem
+    // capturar nada e sem nenhum aviso — a janela parecia normal, so com
+    // "WhatsApp Desconectado" na lateral. O pior tipo de falha que este
+    // projeto ja teve e justamente essa: parar em silencio parecendo saudavel.
+    //
+    // A reconexao automatica que ja existia cobre queda de rede COM o processo
+    // vivo; nao cobria processo novo. Isto fecha esse buraco.
+    //
+    // So conecta se houver credencial salva: sem pareamento, `connect()` abriria
+    // um QR Code que o usuario nao pediu.
+    const credenciaisSalvas = path.join(userDataPath, 'whatsapp-auth', 'creds.json')
+    if (fs.existsSync(credenciaisSalvas)) {
+      log.info('Pareamento do WhatsApp encontrado — reconectando automaticamente')
+      whatsappManager.connect().catch((err) => {
+        log.error('Falha ao reconectar o WhatsApp na inicializacao:', err)
+        dbManager.addLog({
+          type: 'warning',
+          platform: 'whatsapp',
+          message: 'Não consegui reconectar o WhatsApp ao abrir o app',
+          details: `Abra Conexões e clique em Conectar. Erro: ${(err as Error).message}`.substring(0, 300),
+        })
+      })
+    }
 
     // Iniciar busca automática de ofertas
     const startAutoScrape = async (): Promise<number> => {
