@@ -1511,10 +1511,25 @@ monitorados_salvos=[${salvos}]`,
     // processado quase junto) tem vários links, o segundo não precisa esperar
     // o raspador+repost do primeiro terminar pra começar — cada raspagem
     // já é uma operação de rede independente.
-    await Promise.all(urls.map((url) => this.processDetectedUrl(url)))
+    await Promise.all(urls.map((url) => this.processDetectedUrl(url, false, msg.key.remoteJid ?? undefined)))
   }
 
-  private async processDetectedUrl(url: string, viaAgregador = false): Promise<void> {
+  /**
+   * `origem` e o chat de onde o link veio.
+   *
+   * Sem ele os registros de captura diziam so a URL, e nao dava para saber se
+   * uma oferta veio de grupo ou de canal — que e exatamente a pergunta em
+   * aberto quando se esta medindo canal silenciado contra canal normal. Com
+   * varios grupos e canais monitorados ao mesmo tempo, atribuir "no olho" pelo
+   * horario e chute.
+   */
+  private async processDetectedUrl(url: string, viaAgregador = false, origem?: string): Promise<void> {
+    const nomeDaOrigem = (): string => {
+      if (!origem) return 'origem desconhecida'
+      const g = this.dbManager.getMonitoredGroups('whatsapp').find((x) => x.group_id === origem)
+      const tipo = origem.endsWith('@newsletter') ? 'canal' : 'grupo'
+      return `${tipo} ${g?.group_name || origem}`
+    }
     const store = this.scraperManager.affiliateManager?.detectStore(url)
     if (!store) {
       // Antes o link morria aqui. Só que grupo agregador manda o encurtador
@@ -1534,9 +1549,9 @@ monitorados_salvos=[${salvos}]`,
             type: 'info',
             platform: 'whatsapp',
             message: 'Link de agregador resolvido para a loja',
-            details: `${url.substring(0, 70)} -> ${daLoja.substring(0, 90)}`,
+            details: `De: ${nomeDaOrigem()} | ${url.substring(0, 70)} -> ${daLoja.substring(0, 90)}`,
           })
-          await this.processDetectedUrl(daLoja, true)
+          await this.processDetectedUrl(daLoja, true, origem)
           return
         }
       }
@@ -1545,7 +1560,7 @@ monitorados_salvos=[${salvos}]`,
         type: 'warning',
         platform: 'whatsapp',
         message: 'Link recebido de grupo monitorado, mas loja não reconhecida',
-        details: `URL: ${url}`,
+        details: `De: ${nomeDaOrigem()} | URL: ${url}`,
       })
       return
     }
@@ -1602,7 +1617,7 @@ monitorados_salvos=[${salvos}]`,
         type: 'success',
         platform: 'whatsapp',
         message: `Produto capturado: ${product.title}`,
-        details: `URL: ${url}`,
+        details: `De: ${nomeDaOrigem()} | URL: ${url}`,
       })
       sendToRenderer('product:created', product)
 
@@ -1614,7 +1629,7 @@ monitorados_salvos=[${salvos}]`,
         type: 'error',
         platform: 'whatsapp',
         message: 'Falha ao capturar produto do WhatsApp',
-        details: (error as Error).message,
+        details: `De: ${nomeDaOrigem()} | URL: ${url} | ${(error as Error).message}`,
       })
     }
   }
