@@ -716,6 +716,16 @@ export class DatabaseManager extends EventEmitter {
     const atual = this.db
       .prepare('SELECT tentativas FROM capturas_adiadas WHERE url = ?')
       .get(base) as { tentativas: number } | undefined
+    // Teto da fila. Medido em 3h reais na maquina do dono: 129 falhas, sendo
+    // 109 de preco da Amazon. Sem teto, com o laco levando 3 a cada 5 minutos
+    // (36/h) e a entrada girando ~43/h, a fila crescia mais rapido do que
+    // esvaziava e nunca mais drenava — martelando as lojas para sempre.
+    // Cheia, para de aceitar oferta nova em vez de inchar; o campo `adiadas`
+    // do relatorio mostra quando isso acontece.
+    if (!atual) {
+      const naFila = (this.db.prepare('SELECT COUNT(*) c FROM capturas_adiadas').get() as { c: number }).c
+      if (naFila >= 150) return null
+    }
     const tentativas = (atual?.tentativas ?? 0) + 1
     if (tentativas > 6) {
       this.db.prepare('DELETE FROM capturas_adiadas WHERE url = ?').run(base)
