@@ -22,7 +22,7 @@ import {
   ChevronUp,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
-import { formatCurrency, truncate, parseDbDate } from '../lib/utils'
+import { formatCurrency, truncate, formatDate, formatDateTimeFull } from '../lib/utils'
 
 // ── tipos locais ─────────────────────────────────────────────────────────────
 interface ScrapedData {
@@ -452,8 +452,14 @@ Se alguma dessas ofertas for capturada de novo mais tarde, ela poderá ser publi
                           <p className="text-sm font-medium text-foreground truncate max-w-[200px]">
                             {truncate(product.title, 40)}
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            {parseDbDate(product.created_at).toLocaleDateString('pt-BR')}
+                          {/* Data E hora: saber que uma oferta entrou 12:29 e nao "hoje"
+                              e o que permite casar o produto com a mensagem que o
+                              gerou no grupo. O titulo do elemento traz o segundo. */}
+                          <p
+                            className="text-xs text-muted-foreground"
+                            title={product.created_at ? formatDateTimeFull(product.created_at) : undefined}
+                          >
+                            {product.created_at ? formatDate(product.created_at) : '—'}
                           </p>
                         </div>
                       </div>

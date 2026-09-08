@@ -32,6 +32,22 @@ export function formatDate(dateString: string): string {
   })
 }
 
+/**
+ * Data e hora com segundos — para o `title` de um elemento que ja mostra a
+ * versao curta. Serve para casar um produto com a mensagem exata que o gerou
+ * quando varias ofertas caem no mesmo minuto.
+ */
+export function formatDateTimeFull(dateString: string): string {
+  return parseDbDate(dateString).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 export function truncate(str: string, length: number): string {
   if (str.length <= length) return str
   return str.slice(0, length) + '...'
