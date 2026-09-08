@@ -263,6 +263,23 @@ export class DatabaseManager extends EventEmitter {
       CREATE INDEX IF NOT EXISTS idx_send_history_group ON send_history(group_id);
       CREATE INDEX IF NOT EXISTS idx_send_history_time ON send_history(sent_at);
 
+      -- Ofertas cuja captura falhou por motivo PASSAGEIRO (bloqueio do Mercado
+      -- Livre, preco que a Amazon nao entregou, AliExpress que nao renderizou).
+      -- Sem isso a oferta era perdida de vez: o erro era registrado e ninguem
+      -- voltava nela. E pior — a cada reentrega de lote o mesmo link era
+      -- raspado de novo na hora, falhando igual: no log do dono, o mesmo
+      -- mesmo link curto da Amazon falhou 6 vezes em 12 minutos.
+      CREATE TABLE IF NOT EXISTS capturas_adiadas (
+        url TEXT PRIMARY KEY,
+        origem TEXT,
+        erro TEXT,
+        tentativas INTEGER NOT NULL DEFAULT 1,
+        proxima_em DATETIME NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_capturas_adiadas_prox ON capturas_adiadas(proxima_em);
+
       CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL CHECK(type IN ('info', 'warning', 'error', 'success')),
@@ -682,6 +699,66 @@ export class DatabaseManager extends EventEmitter {
     values.push(id)
 
     this.db.prepare(`UPDATE products SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+  }
+
+  // ==================== CAPTURAS ADIADAS ====================
+
+  /**
+   * Marca uma oferta para nova tentativa mais tarde, com espera progressiva.
+   *
+   * As esperas dobram (10, 20, 40, 80, 160, 320 min) porque os dois motivos
+   * mais comuns sao bloqueio de anti-robo: insistir de perto e o que mantem o
+   * bloqueio de pe. Depois de 6 tentativas desiste — passou de 9 horas, e a
+   * oferta ja nao vale.
+   */
+  adiarCaptura(url: string, origem: string | undefined, erro: string): { tentativas: number; minutos: number } | null {
+    const base = urlBaseDoProduto(url)
+    const atual = this.db
+      .prepare('SELECT tentativas FROM capturas_adiadas WHERE url = ?')
+      .get(base) as { tentativas: number } | undefined
+    const tentativas = (atual?.tentativas ?? 0) + 1
+    if (tentativas > 6) {
+      this.db.prepare('DELETE FROM capturas_adiadas WHERE url = ?').run(base)
+      return null
+    }
+    const minutos = 10 * 2 ** (tentativas - 1)
+    this.db
+      .prepare(`
+        INSERT INTO capturas_adiadas (url, origem, erro, tentativas, proxima_em)
+        VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' minutes'))
+        ON CONFLICT(url) DO UPDATE SET
+          origem = excluded.origem,
+          erro = excluded.erro,
+          tentativas = excluded.tentativas,
+          proxima_em = excluded.proxima_em
+      `)
+      .run(base, origem ?? null, erro.substring(0, 300), tentativas, minutos)
+    return { tentativas, minutos }
+  }
+
+  /** Ha uma tentativa marcada para esta URL que ainda nao venceu? */
+  capturaAindaEsperando(url: string): boolean {
+    const row = this.db
+      .prepare("SELECT 1 FROM capturas_adiadas WHERE url = ? AND proxima_em > datetime('now') LIMIT 1")
+      .get(urlBaseDoProduto(url))
+    return !!row
+  }
+
+  /** Ofertas cuja hora de tentar de novo ja chegou. */
+  capturasVencidas(limite = 5): Array<{ url: string; origem: string | null; tentativas: number }> {
+    return this.db
+      .prepare("SELECT url, origem, tentativas FROM capturas_adiadas WHERE proxima_em <= datetime('now') ORDER BY proxima_em LIMIT ?")
+      .all(limite) as Array<{ url: string; origem: string | null; tentativas: number }>
+  }
+
+  esquecerCapturaAdiada(url: string): void {
+    this.db.prepare('DELETE FROM capturas_adiadas WHERE url = ?').run(urlBaseDoProduto(url))
+  }
+
+  /** Quantas ofertas estao na fila de nova tentativa. */
+  contarCapturasAdiadas(): number {
+    const r = this.db.prepare('SELECT COUNT(*) c FROM capturas_adiadas').get() as { c: number }
+    return r.c
   }
 
   deleteProduct(id: number): void {

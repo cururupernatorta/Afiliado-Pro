@@ -71,6 +71,8 @@ export class WhatsAppManager {
     canalVazioFora: 0,
     canalTextoDentro: 0,
     canalTextoFora: 0,
+    // Falhas passageiras por loja - ver falhaEhPassageira.
+    bloqueios: {} as Record<string, number>,
     aposFiltroDeTipo: 0,
     semConteudo: 0,
     stubs: {} as Record<string, number>,
@@ -112,6 +114,8 @@ export class WhatsAppManager {
   // Instante da ultima inscricao aceita, por canal - ver classificarMensagemDeCanal.
   private inscritoEm = new Map<string, number>()
   private jaOlheiEstadoDosCanais = false
+  private retentativaTimer: NodeJS.Timeout | null = null
+  private readonly RETENTATIVA_CAPTURA_MS = 5 * 60 * 1000
   private readonly JANELA_INSCRICAO_MS = 90000
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
@@ -176,12 +180,12 @@ export class WhatsAppManager {
       message: r.mensagens === 0 && monitorados.length > 0
         ? `Nenhuma mensagem recebida do WhatsApp nos últimos 30 min (${monitorados.length} grupo(s)/canal(is) monitorado(s))`
         : `Recepção do WhatsApp nos últimos 30 min: ${r.mensagens} mensagem(ns), ${r.deGrupoMonitorado} de grupo monitorado`,
-      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, ja_vistas=${r.jaVistas}, reenvios_pedidos=${r.reenviosPedidos}, canal_janela=[vazio_dentro=${r.canalVazioDentro}, vazio_fora=${r.canalVazioFora}, texto_dentro=${r.canalTextoDentro}, texto_fora=${r.canalTextoFora}], nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
+      details: `lotes=${r.lotes}, mensagens=${r.mensagens}, tipos=[${tipos}], apos_filtro_de_tipo=${r.aposFiltroDeTipo}, flushes_forcados=${r.flushesForcados}, minhas_proprias=${r.proprias}, ja_vistas=${r.jaVistas}, reenvios_pedidos=${r.reenviosPedidos}, bloqueios=[${Object.entries(r.bloqueios).map(([l, n]) => `${l}=${n}`).join(', ') || 'nenhum'}], adiadas=${this.dbManager.contarCapturasAdiadas()}, canal_janela=[vazio_dentro=${r.canalVazioDentro}, vazio_fora=${r.canalVazioFora}, texto_dentro=${r.canalTextoDentro}, texto_fora=${r.canalTextoFora}], nao_decifradas=${r.semConteudo}, stubs=[${Object.entries(r.stubs).map(([t, n]) => `${t}=${n}`).join(', ') || 'nenhum'}], com_texto=${r.comTexto}, sem_texto=${r.semTexto}, com_link=${r.comLink}, de_grupo_monitorado=${r.deGrupoMonitorado}, monitorados=${monitorados.length}
 chats_que_mandaram=[${chats}]
 monitorados_salvos=[${salvos}]`,
     })
 
-    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, reenviosPedidos: 0, canalVazioDentro: 0, canalVazioFora: 0, canalTextoDentro: 0, canalTextoFora: 0, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+    this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, reenviosPedidos: 0, canalVazioDentro: 0, canalVazioFora: 0, canalTextoDentro: 0, canalTextoFora: 0, bloqueios: {}, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
   }
 
   async connect(): Promise<void> {
@@ -342,6 +346,7 @@ monitorados_salvos=[${salvos}]`,
           log.info('WhatsApp conectado')
           this.startMonitoring()
           this.iniciarRelatorioDeRecepcao()
+          this.iniciarRetentativasDeCaptura()
           void this.assinarCanaisMonitorados()
         }
       })
@@ -619,6 +624,7 @@ monitorados_salvos=[${salvos}]`,
     // Zerar aqui tambem faz a proxima conexao voltar a registrar a inscricao
     // (o log dela e gateado por este temporizador estar nulo).
     if (this.renovarInscricaoTimer) { clearTimeout(this.renovarInscricaoTimer); this.renovarInscricaoTimer = null }
+    if (this.retentativaTimer) { clearInterval(this.retentativaTimer); this.retentativaTimer = null }
     if (!this.sock) return
     const antigo = this.sock
     this.sock = null
@@ -696,6 +702,7 @@ monitorados_salvos=[${salvos}]`,
     // Zerar aqui tambem faz a proxima conexao voltar a registrar a inscricao
     // (o log dela e gateado por este temporizador estar nulo).
     if (this.renovarInscricaoTimer) { clearTimeout(this.renovarInscricaoTimer); this.renovarInscricaoTimer = null }
+    if (this.retentativaTimer) { clearInterval(this.retentativaTimer); this.retentativaTimer = null }
     if (this.sock) {
       try {
         this.sock.end(undefined)
@@ -1515,6 +1522,64 @@ monitorados_salvos=[${salvos}]`,
   }
 
   /**
+   * A falha da captura foi passageira, ou o produto simplesmente nao serve?
+   *
+   * Sao tratamentos opostos. Bloqueio de anti-robo e preco que a pagina nao
+   * entregou passam sozinhos — a oferta e boa e merece nova tentativa. Ja
+   * "loja nao suportada" ou produto fora do programa de afiliados nao mudam
+   * com o tempo, e reagendar isso so encheria a fila para sempre.
+   */
+  private falhaEhPassageira(erro: string): boolean {
+    const e = erro.toLowerCase()
+    const passageiras = [
+      'bloqueou o acesso',
+      'não consegui extrair o preço',
+      'nao consegui extrair o preco',
+      'captcha',
+      'timeout',
+      'etimedout',
+      'econnreset',
+      'socket hang up',
+      'network',
+    ]
+    const definitivas = ['loja não suportada', 'não conhece este produto', 'fora do programa']
+    if (definitivas.some((d) => e.includes(d))) return false
+    return passageiras.some((x) => e.includes(x))
+  }
+
+  /**
+   * Tenta de novo as ofertas cuja espera venceu.
+   *
+   * Roda de 5 em 5 minutos e pega poucas por vez: sao raspagens de rede, e
+   * disparar tudo junto reproduziria a rajada que causou o bloqueio.
+   */
+  private iniciarRetentativasDeCaptura(): void {
+    if (this.retentativaTimer) clearInterval(this.retentativaTimer)
+    this.retentativaTimer = setInterval(() => {
+      void this.tentarCapturasAdiadas()
+    }, this.RETENTATIVA_CAPTURA_MS)
+  }
+
+  private async tentarCapturasAdiadas(): Promise<void> {
+    if (this.status !== 'connected') return
+    const vencidas = this.dbManager.capturasVencidas(3)
+    for (const item of vencidas) {
+      // Ja capturado por outro caminho enquanto esperava: nao ha o que tentar.
+      if (this.dbManager.productExistsByUrl(item.url)) {
+        this.dbManager.esquecerCapturaAdiada(item.url)
+        continue
+      }
+      this.dbManager.addLog({
+        type: 'info',
+        platform: 'whatsapp',
+        message: 'Tentando de novo uma oferta que tinha falhado',
+        details: `tentativa ${item.tentativas + 1} | URL: ${item.url}`,
+      })
+      await this.processDetectedUrl(item.url, false, item.origem ?? undefined, true)
+    }
+  }
+
+  /**
    * `origem` e o chat de onde o link veio.
    *
    * Sem ele os registros de captura diziam so a URL, e nao dava para saber se
@@ -1523,7 +1588,14 @@ monitorados_salvos=[${salvos}]`,
    * varios grupos e canais monitorados ao mesmo tempo, atribuir "no olho" pelo
    * horario e chute.
    */
-  private async processDetectedUrl(url: string, viaAgregador = false, origem?: string): Promise<void> {
+  private async processDetectedUrl(url: string, viaAgregador = false, origem?: string, ehRetentativa = false): Promise<void> {
+    // Esta oferta ja falhou ha pouco e tem hora marcada para nova tentativa.
+    // Sem esta guarda, cada reentrega de lote raspava o mesmo link de novo na
+    // hora e falhava igual — 6 vezes em 12 minutos no log do dono.
+    if (!ehRetentativa && this.dbManager.capturaAindaEsperando(url)) {
+      log.info(`Captura adiada ainda esperando, ignorando reprocessamento: ${url}`)
+      return
+    }
     const nomeDaOrigem = (): string => {
       if (!origem) return 'origem desconhecida'
       const g = this.dbManager.getMonitoredGroups('whatsapp').find((x) => x.group_id === origem)
@@ -1619,6 +1691,8 @@ monitorados_salvos=[${salvos}]`,
         message: `Produto capturado: ${product.title}`,
         details: `De: ${nomeDaOrigem()} | URL: ${url}`,
       })
+      // Capturou: a oferta sai da fila de nova tentativa.
+      this.dbManager.esquecerCapturaAdiada(url)
       sendToRenderer('product:created', product)
 
       await autoRepostProduct(product, 'whatsapp', this.dbManager, this.queueManager)
@@ -1631,6 +1705,20 @@ monitorados_salvos=[${salvos}]`,
         message: 'Falha ao capturar produto do WhatsApp',
         details: `De: ${nomeDaOrigem()} | URL: ${url} | ${(error as Error).message}`,
       })
+
+      const motivo = (error as Error).message
+      if (store) this.recepcao.bloqueios[store] = (this.recepcao.bloqueios[store] ?? 0) + 1
+      if (this.falhaEhPassageira(motivo)) {
+        const marcado = this.dbManager.adiarCaptura(url, origem, motivo)
+        this.dbManager.addLog({
+          type: marcado ? 'info' : 'warning',
+          platform: 'whatsapp',
+          message: marcado
+            ? `Oferta guardada para tentar de novo em ${marcado.minutos} min`
+            : 'Desisti desta oferta depois de 6 tentativas',
+          details: `De: ${nomeDaOrigem()} | URL: ${url}`,
+        })
+      }
     }
   }
 
