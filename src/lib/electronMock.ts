@@ -11,6 +11,7 @@ export function installElectronMockIfNeeded() {
 
   ;(window as any).electronAPI = {
     whatsappConnect: async () => {},
+    whatsappReconnect: async () => {},
     whatsappDisconnect: async () => {},
     whatsappGetStatus: async () => ({ status: 'disconnected', qrCode: null }),
     whatsappGetGroups: async () => [],

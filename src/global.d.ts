@@ -3,6 +3,7 @@ export interface ElectronAPI {
   whatsappConnect: () => Promise<void>
   whatsappDisconnect: () => Promise<void>
   whatsappGetStatus: () => Promise<any>
+  whatsappReconnect: () => Promise<void>
   whatsappGetGroups: () => Promise<any[]>
   whatsappToggleMonitor: (groupId: string, groupName: string, enabled: boolean) => Promise<void>
   whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: { description?: string; coupon?: string; imageUrl?: string; templateText?: string }) => Promise<void>

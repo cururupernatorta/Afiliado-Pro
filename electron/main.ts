@@ -531,6 +531,7 @@ app.on('window-all-closed', () => {
 const setupIpcHandlers = (): void => {
   ipcMain.handle('whatsapp:connect', () => whatsappManager.connect())
   ipcMain.handle('whatsapp:disconnect', () => whatsappManager.disconnect())
+  ipcMain.handle('whatsapp:reconnect', () => whatsappManager.reconnect())
   ipcMain.handle('whatsapp:getStatus', () => whatsappManager.getStatus())
   ipcMain.handle('whatsapp:getGroups', () => whatsappManager.getGroups())
   ipcMain.handle('whatsapp:toggleMonitor', (_, groupId: string, groupName: string, enabled: boolean) =>

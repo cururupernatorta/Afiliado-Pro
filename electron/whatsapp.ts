@@ -613,6 +613,7 @@ monitorados_salvos=[${salvos}]`,
   }
 
   private encerrarSocketAnterior(): void {
+    this.jaOlheiEstadoDosCanais = false
     if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
     if (this.estabilidadeTimer) { clearTimeout(this.estabilidadeTimer); this.estabilidadeTimer = null }
     // Zerar aqui tambem faz a proxima conexao voltar a registrar a inscricao
@@ -661,7 +662,34 @@ monitorados_salvos=[${salvos}]`,
   // apaga a sessão salva; chamar isso a cada fechamento do app forçava o
   // usuário a escanear o QR Code de novo toda vez que uma atualização reiniciava
   // o programa.
+  /**
+   * Fecha e reabre a conexao SEM desfazer o pareamento.
+   *
+   * Existe porque `disconnect()` faz `sock.logout()`, que desfaz o pareamento
+   * no WhatsApp e apaga as credenciais — usar aquele botao so para "reconectar"
+   * custa uma leitura de QR Code. E reconectar e algo que se precisa fazer com
+   * frequencia: nos logs reais a conexao fica viva mas muda, e so o ciclo de
+   * cair e voltar drena a fila do servidor.
+   */
+  async reconnect(): Promise<void> {
+    this.reconnectAttempts = 0
+    this.closeConnection()
+    this.status = 'disconnected'
+    sendToRenderer('whatsapp:status', 'disconnected')
+    this.dbManager.addLog({
+      type: 'info',
+      platform: 'whatsapp',
+      message: 'Reconectando o WhatsApp a pedido do usuário',
+      details: 'A conexão é refeita sem desfazer o pareamento — não é preciso ler o QR Code.',
+    })
+    await this.connect()
+  }
+
   closeConnection(): void {
+    // Cada conexao volta a checar o estado dos canais. Sem zerar aqui, a
+    // verificacao valia UMA vez por processo: reconectar nao reliria o estado,
+    // e era justamente isso que precisavamos observar mudar.
+    this.jaOlheiEstadoDosCanais = false
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     if (this.flushWatchdog) { clearInterval(this.flushWatchdog); this.flushWatchdog = null }
     if (this.estabilidadeTimer) { clearTimeout(this.estabilidadeTimer); this.estabilidadeTimer = null }

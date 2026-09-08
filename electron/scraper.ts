@@ -288,13 +288,17 @@ export class ScraperManager {
   /**
    * Diz se um link resolvido de agregador esta comprovadamente morto.
    *
-   * Motivo: `ofertaclick.com.br` publica no proprio `<a href>` links como
-   * `https://link.amazon/B0fAhxcLm`, que respondem 404. Nao e deformacao nossa
-   * - abri a pagina no navegador e o endereco quebrado esta no HTML deles, e o
-   * codigo tem 9 caracteres onde um ASIN da Amazon tem 10. O app copiava
-   * fielmente esse lixo: no banco do dono, 48 dos 104 anuncios enviados
-   * levavam a um link morto. Postar link quebrado para o publico do cliente e
-   * pior do que nao postar nada.
+   * ATENCAO a premissa, que ja esteve errada aqui: `link.amazon/XXXXXXXXX` do
+   * `ofertaclick.com.br` PARECE morto e nao esta. Ele responde 404 a HEAD e
+   * 200 a GET, redirecionando para o produto real na Amazon (verificado nos
+   * dois links que este metodo chegou a recusar). O codigo curto ter 9
+   * caracteres, contra 10 de um ASIN, nao quer dizer nada - e o formato do
+   * encurtador, nao um ASIN truncado.
+   *
+   * Por isso o veredito NUNCA sai de um HEAD. Ele so serve para o caso barato
+   * de ja responder ok; qualquer recusa e reconferida com GET seguindo
+   * redirecionamento. Descartar oferta boa e pior que o problema que este
+   * metodo veio resolver.
    *
    * So devolve `true` para prova de que o endereco nao existe: 404, 410 ou
    * dominio/conexao inexistente. 403, 429 e 5xx sao resposta de anti-robo ou
@@ -311,8 +315,13 @@ export class ScraperManager {
     }
     try {
       let resposta = await axios.head(url, opcoes)
-      // Muito site recusa HEAD (405/501) sem que o endereco seja invalido.
-      if (resposta.status === 405 || resposta.status === 501) {
+      // HEAD nao serve como veredito. O encurtador da Amazon (`link.amazon/...`)
+      // responde 404 a HEAD e 200 a GET, redirecionando para o produto de
+      // verdade — medido nos dois links que este metodo tinha classificado como
+      // mortos. Confiar no HEAD fazia o app DESCARTAR oferta boa, que e pior do
+      // que o problema que ele veio resolver. Entao HEAD so serve para o caso
+      // barato (respondeu ok, esta vivo); qualquer recusa e reconferida com GET.
+      if (resposta.status >= 400) {
         resposta = await axios.get(url, opcoes)
       }
       return resposta.status === 404 || resposta.status === 410

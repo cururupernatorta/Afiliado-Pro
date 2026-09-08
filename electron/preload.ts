@@ -13,6 +13,7 @@ export interface ElectronAPI {
   whatsappConnect: () => Promise<void>
   whatsappDisconnect: () => Promise<void>
   whatsappGetStatus: () => Promise<any>
+  whatsappReconnect: () => Promise<void>
   whatsappGetGroups: () => Promise<any[]>
   whatsappToggleMonitor: (groupId: string, groupName: string, enabled: boolean) => Promise<void>
   whatsappSendProducts: (groupIds: string[], productIds: number[], extra?: SendProductsExtra) => Promise<void>
@@ -95,6 +96,7 @@ const api: ElectronAPI = {
   whatsappConnect: () => ipcRenderer.invoke('whatsapp:connect'),
   whatsappDisconnect: () => ipcRenderer.invoke('whatsapp:disconnect'),
   whatsappGetStatus: () => ipcRenderer.invoke('whatsapp:getStatus'),
+  whatsappReconnect: () => ipcRenderer.invoke('whatsapp:reconnect'),
   whatsappGetGroups: () => ipcRenderer.invoke('whatsapp:getGroups'),
   whatsappToggleMonitor: (groupId, groupName, enabled) => ipcRenderer.invoke('whatsapp:toggleMonitor', groupId, groupName, enabled),
   whatsappSendProducts: (groupIds, productIds, extra) => ipcRenderer.invoke('whatsapp:sendProducts', groupIds, productIds, extra),

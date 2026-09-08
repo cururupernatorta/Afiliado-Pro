@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Loader2,
   LogOut,
+  RefreshCw,
   AlertCircle,
   ShoppingBag,
   LogIn,
@@ -41,7 +42,24 @@ export default function Conexoes() {
     await window.electronAPI.whatsappConnect()
   }
 
+  const [isReconnecting, setIsReconnecting] = useState(false)
+
+  // Reconectar e desconectar sao coisas MUITO diferentes aqui, e a tela nao
+  // deixava isso claro: "Desconectar" chama `sock.logout()`, que desfaz o
+  // pareamento no WhatsApp e obriga a ler o QR Code de novo. Quem so queria
+  // sacudir uma conexao travada pagava caro por isso.
+  const handleWhatsAppReconnect = async () => {
+    if (isReconnecting) return
+    setIsReconnecting(true)
+    try {
+      await window.electronAPI.whatsappReconnect()
+    } finally {
+      setIsReconnecting(false)
+    }
+  }
+
   const handleWhatsAppDisconnect = async () => {
+    if (!confirm('Desconectar desfaz o pareamento com o WhatsApp: sera preciso ler o QR Code de novo.\n\nSe voce so quer religar a conexao, use "Reconectar" - ele nao pede QR Code.\n\nDesconectar mesmo assim?')) return
     await window.electronAPI.whatsappDisconnect()
     setWhatsappQrCode(null)
   }
@@ -159,11 +177,21 @@ export default function Conexoes() {
                 </div>
               </div>
               <button
+                onClick={handleWhatsAppReconnect}
+                disabled={isReconnecting}
+                title="Refaz a conexão sem pedir QR Code. Use quando o app estiver conectado mas não capturar nada."
+                className="w-full h-10 rounded-lg border border-border text-foreground text-sm font-medium hover:bg-secondary transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isReconnecting ? 'animate-spin' : ''}`} />
+                {isReconnecting ? 'Reconectando...' : 'Reconectar'}
+              </button>
+              <button
                 onClick={handleWhatsAppDisconnect}
+                title="Desfaz o pareamento: será preciso ler o QR Code de novo."
                 className="w-full h-10 rounded-lg border border-red-500/30 text-red-400 text-sm font-medium hover:bg-red-500/10 transition-colors flex items-center justify-center gap-2"
               >
                 <LogOut className="w-4 h-4" />
-                Desconectar
+                Desconectar (pede QR de novo)
               </button>
             </div>
           )}
