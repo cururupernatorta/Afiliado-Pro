@@ -115,6 +115,9 @@ export class WhatsAppManager {
   private inscritoEm = new Map<string, number>()
   private jaOlheiEstadoDosCanais = false
   private retentativaTimer: NodeJS.Timeout | null = null
+  // Instante da ultima resposta de historico - ver conferirRespostaDaVarredura.
+  private ultimaRespostaDeHistorico = 0
+  private readonly PRAZO_RESPOSTA_VARREDURA_MS = 2 * 60 * 1000
   private readonly RETENTATIVA_CAPTURA_MS = 5 * 60 * 1000
   private readonly JANELA_INSCRICAO_MS = 90000
   private relatorioTimer: NodeJS.Timeout | null = null
@@ -446,6 +449,7 @@ monitorados_salvos=[${salvos}]`,
             'de=[' + Object.entries(porChat).map(([j, n]) => j + '=' + String(n)).join(', ') + ']',
           ].join(' | ').substring(0, 900),
         })
+        this.ultimaRespostaDeHistorico = Date.now()
         this.bufferHistoryMessages(messages)
         await this.recoverMonitoredFromHistory(messages, 'reconexão')
       })
@@ -1041,10 +1045,50 @@ monitorados_salvos=[${salvos}]`,
         : `Varredura concluída — ${processadas} mensagem(ns) reprocessada(s), ${pedidos} pedido(s) de histórico enviado(s)`,
       details: semAncora
         ? 'A varredura precisa de ao menos uma mensagem já recebida de cada grupo para saber de onde pedir o histórico. Deixe o app conectado alguns minutos e tente de novo.'
-        : 'O histórico pedido chega em segundo plano e é capturado como mensagem normal. Ofertas já capturadas são ignoradas.',
+        : 'Quem responde a este pedido é o SEU CELULAR, não o servidor do WhatsApp. Ele precisa estar ligado, com internet e com o WhatsApp aberto. Se vier resposta, os anúncios são capturados em segundo plano; em até 2 minutos eu aviso aqui se nada chegar.',
     })
 
+    if (pedidos > 0) this.conferirRespostaDaVarredura(Date.now())
+
     return { ok: true, processadas, pedidos, grupos: monitorados.length, semAncora }
+  }
+
+  /**
+   * Diz se o pedido de historico foi respondido — e, quando nao foi, por que.
+   *
+   * Sem isto a varredura falhava em silencio: mandava os pedidos, dizia que "o
+   * historico chega em segundo plano", e nunca chegava nada. Nos logs dos dois
+   * testadores, em TODAS as varreduras ja feitas, a resposta nao veio uma vez
+   * sequer — e nem o usuario nem eu tinhamos como saber disso, entao os dois
+   * ficavam esperando.
+   *
+   * A dependencia e do aparelho, nao do servidor: `fetchMessageHistory` do
+   * Baileys nao consulta o WhatsApp, ele relaya uma `peerDataOperationRequest`
+   * para o proprio numero do usuario (Socket/messages-send.js), pedindo que o
+   * CELULAR devolva o trecho. E o mesmo caminho que a propria biblioteca marca
+   * como "Phone possibly offline" quando ninguem responde.
+   */
+  private conferirRespostaDaVarredura(pedidoEm: number): void {
+    setTimeout(() => {
+      if (this.ultimaRespostaDeHistorico >= pedidoEm) {
+        this.dbManager.addLog({
+          type: 'success',
+          platform: 'whatsapp',
+          message: 'O celular respondeu ao pedido de histórico da varredura',
+          details: 'As mensagens recebidas foram processadas como captura normal.',
+        })
+        return
+      }
+      this.dbManager.addLog({
+        type: 'warning',
+        platform: 'whatsapp',
+        message: 'A varredura não recebeu resposta — nenhum anúncio antigo foi recuperado',
+        details:
+          'O pedido de histórico vai para o SEU CELULAR, não para o servidor do WhatsApp, e ele não respondeu em 2 minutos. ' +
+          'Verifique se o celular está ligado, com internet e com o WhatsApp aberto, e tente de novo. ' +
+          'Vale saber que os anúncios que passaram enquanto o app esteve desconectado costumam chegar sozinhos na reconexão, sem precisar de varredura.',
+      })
+    }, this.PRAZO_RESPOSTA_VARREDURA_MS)
   }
 
   // Mensagem própria some em silêncio, e isso é correto: sem esse filtro o app

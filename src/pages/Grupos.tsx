@@ -215,6 +215,14 @@ export default function Grupos() {
           <p className="text-xs text-muted-foreground mb-3">
             Revarre os grupos monitorados atrás de ofertas que o app não capturou — por exemplo, enquanto o WhatsApp esteve desconectado. O que já foi capturado antes é ignorado, então não gera anúncio repetido.
           </p>
+          {/* Aviso da dependencia real: nos logs dos dois testadores, a resposta
+              a este pedido nunca chegou uma vez sequer, e o usuario ficava
+              esperando sem saber por que. */}
+          <p className="text-xs text-amber-400/90 mb-3">
+            Depende do seu celular: quem devolve o histórico é o aparelho, não o servidor do WhatsApp.
+            Ele precisa estar ligado, com internet e com o WhatsApp aberto. Em até 2 minutos o app avisa
+            em Logs se a resposta não vier.
+          </p>
           <div className="flex items-center gap-3">
             <input
               type="range"
