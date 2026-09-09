@@ -180,6 +180,14 @@ export default function Produtos() {
     setImagePreview('')
   }
 
+  // Salva na hora: um botao de confirmar so para isso seria atrito a toa, e o
+  // proprio seletor ja mostra o estado atual.
+  const handleRecurrenceChange = async (id: number, valor: string) => {
+    const horas = valor === '' ? null : Number(valor)
+    await window.electronAPI.productSetRecurrence(id, horas)
+    updateProduct(id, { recorrencia_horas: horas })
+  }
+
   // ── deletar ────────────────────────────────────────────────────────────────
   const handleDelete = async (id: number) => {
     if (!confirm('Tem certeza que deseja excluir este produto?')) return
@@ -415,13 +423,14 @@ Se alguma dessas ofertas for capturada de novo mais tarde, ela poderá ser publi
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Loja</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Fonte</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Link</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Repostar</th>
                 <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Ações</th>
               </tr>
             </thead>
             <tbody>
               {filteredProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground">
                     <Package className="w-10 h-10 mx-auto mb-2 opacity-50" />
                     <p className="text-sm">Nenhum produto encontrado</p>
                   </td>
@@ -504,6 +513,24 @@ Se alguma dessas ofertas for capturada de novo mais tarde, ela poderá ser publi
                           <ExternalLink className="w-4 h-4" />
                         </a>
                       </div>
+                    </td>
+                    {/* Recorrência: o afiliado recomenda mais ou menos os mesmos
+                        itens todo dia. Sem isto, o produto só saía de novo se
+                        alguém repostasse a oferta num grupo monitorado. */}
+                    <td className="px-4 py-3">
+                      <select
+                        value={product.recorrencia_horas ?? ''}
+                        onChange={(e) => handleRecurrenceChange(product.id, e.target.value)}
+                        title="Repostar este produto sozinho, de tempos em tempos"
+                        className="bg-secondary border border-border rounded-lg px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        <option value="">Não repostar</option>
+                        <option value="3">a cada 3h</option>
+                        <option value="6">a cada 6h</option>
+                        <option value="12">a cada 12h</option>
+                        <option value="24">1x por dia</option>
+                        <option value="48">a cada 2 dias</option>
+                      </select>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">

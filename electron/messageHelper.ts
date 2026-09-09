@@ -86,7 +86,14 @@ export async function autoRepostProduct(
   product: ProductLike,
   sourcePlatform: 'whatsapp' | 'telegram',
   dbManager: DatabaseManager,
-  queueManager: QueueManager
+  queueManager: QueueManager,
+  /**
+   * Produto recorrente: repetir E o objetivo, entao a barreira de anuncio
+   * repetido tem que sair do caminho. So esta chamada a ignora — a captura
+   * normal continua protegida, senao voltariamos a inundar o grupo com a
+   * mesma oferta a cada reentrega de lote.
+   */
+  opcoes?: { ignorarRepetido?: boolean }
 ): Promise<void> {
   try {
     const config = dbManager.getConfig()
@@ -116,7 +123,7 @@ export async function autoRepostProduct(
       // Barreira contra anúncio repetido. Só vale para o repost automático —
       // o envio manual continua livre, porque ali a repetição é escolha do
       // usuário, não acidente.
-      if (product.id && dbManager.produtoJaEnviadoAoGrupo(sourcePlatform, target.group_id, product.id)) {
+      if (!opcoes?.ignorarRepetido && product.id && dbManager.produtoJaEnviadoAoGrupo(sourcePlatform, target.group_id, product.id)) {
         jaEnviados++
         continue
       }

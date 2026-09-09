@@ -14,6 +14,9 @@ export interface Product {
   source: 'manual' | 'whatsapp' | 'telegram' | 'busca'
   created_at: string
   updated_at: string
+  /** Horas entre repostagens automáticas. Ausente = não é recorrente. */
+  recorrencia_horas?: number | null
+  recorrente_ultimo_envio?: string | null
 }
 
 export interface Group {

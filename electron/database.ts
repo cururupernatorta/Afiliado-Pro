@@ -22,6 +22,9 @@ export interface Product {
   source: 'manual' | 'whatsapp' | 'telegram' | 'busca'
   created_at?: string
   updated_at?: string
+  /** Horas entre repostagens automaticas. Nulo = nao e recorrente. */
+  recorrencia_horas?: number | null
+  recorrente_ultimo_envio?: string | null
 }
 
 export interface Config {
@@ -156,9 +159,15 @@ export class DatabaseManager extends EventEmitter {
         store TEXT NOT NULL CHECK(store IN ('shopee', 'mercado_livre', 'amazon', 'aliexpress')),
         source TEXT NOT NULL CHECK(source IN ('manual', 'whatsapp', 'telegram', 'busca')),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        -- Produto de vitrine: reposta sozinho de tempos em tempos. Serve para o
+        -- punhado de itens que o afiliado recomenda todo dia, em vez de
+        -- depender de alguem postar a oferta num grupo.
+        recorrencia_horas INTEGER,
+        recorrente_ultimo_envio DATETIME
       );
 
+      CREATE INDEX IF NOT EXISTS idx_products_recorrencia ON products(recorrencia_horas);
       CREATE INDEX IF NOT EXISTS idx_products_store ON products(store);
       CREATE INDEX IF NOT EXISTS idx_products_source ON products(source);
       CREATE INDEX IF NOT EXISTS idx_products_created ON products(created_at);
@@ -292,6 +301,20 @@ export class DatabaseManager extends EventEmitter {
       CREATE INDEX IF NOT EXISTS idx_logs_type ON logs(type);
       CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at);
     `)
+
+    // Migração: colunas da recorrência em bancos já existentes.
+    try {
+      const cols = this.db.prepare('PRAGMA table_info(products)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'recorrencia_horas')) {
+        this.db.exec('ALTER TABLE products ADD COLUMN recorrencia_horas INTEGER')
+      }
+      if (!cols.some((c) => c.name === 'recorrente_ultimo_envio')) {
+        this.db.exec('ALTER TABLE products ADD COLUMN recorrente_ultimo_envio DATETIME')
+      }
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_products_recorrencia ON products(recorrencia_horas)')
+    } catch (err) {
+      log.error('Falha na migração das colunas de recorrência:', err)
+    }
 
     // Migração: adiciona aliexpress_tracking_id em bancos já existentes
     // (CREATE TABLE IF NOT EXISTS não altera tabelas que já foram criadas antes)
@@ -699,6 +722,60 @@ export class DatabaseManager extends EventEmitter {
     values.push(id)
 
     this.db.prepare(`UPDATE products SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+  }
+
+  // ==================== PRODUTOS RECORRENTES ====================
+
+  /**
+   * Liga ou desliga a repostagem automatica de um produto.
+   *
+   * `horas` nulo desliga. Zerar `recorrente_ultimo_envio` ao ligar faz o
+   * produto sair no proximo ciclo em vez de esperar o intervalo cheio — quem
+   * acabou de marcar quer ver acontecer, nao descobrir em 24 horas se
+   * funcionou.
+   */
+  definirRecorrencia(id: number, horas: number | null): void {
+    if (horas == null) {
+      this.db.prepare('UPDATE products SET recorrencia_horas = NULL WHERE id = ?').run(id)
+      return
+    }
+    const limpo = Math.max(1, Math.min(168, Math.round(horas)))
+    this.db
+      .prepare('UPDATE products SET recorrencia_horas = ?, recorrente_ultimo_envio = NULL WHERE id = ?')
+      .run(limpo, id)
+  }
+
+  /**
+   * Produtos recorrentes cuja hora chegou.
+   *
+   * O limite existe para nao despejar vinte anuncios de uma vez num grupo se
+   * varios vencerem juntos — o que acontece na primeira rodada, quando todos
+   * estao sem `ultimo_envio`.
+   */
+  produtosRecorrentesVencidos(limite = 3): Product[] {
+    return this.db
+      .prepare(`
+        SELECT * FROM products
+        WHERE recorrencia_horas IS NOT NULL
+          AND (
+            recorrente_ultimo_envio IS NULL
+            OR datetime(recorrente_ultimo_envio, '+' || recorrencia_horas || ' hours') <= datetime('now')
+          )
+        ORDER BY COALESCE(recorrente_ultimo_envio, '1970-01-01')
+        LIMIT ?
+      `)
+      .all(limite) as Product[]
+  }
+
+  registrarEnvioRecorrente(id: number): void {
+    this.db.prepare("UPDATE products SET recorrente_ultimo_envio = datetime('now') WHERE id = ?").run(id)
+  }
+
+  contarRecorrentes(): number {
+    const r = this.db
+      .prepare('SELECT COUNT(*) c FROM products WHERE recorrencia_horas IS NOT NULL')
+      .get() as { c: number }
+    return r.c
   }
 
   // ==================== CAPTURAS ADIADAS ====================

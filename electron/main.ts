@@ -481,6 +481,64 @@ app.whenReady().then(async () => {
     }
     buscarOfertasAgora = startAutoScrape
 
+    // ---------- Produtos recorrentes ----------
+    // O afiliado recomenda mais ou menos os mesmos teclados e mouses todo dia.
+    // Sem isto, ele dependia de alguem postar aquela oferta num grupo
+    // monitorado para o produto sair de novo — coisa que pode nao acontecer.
+    //
+    // Roda de 5 em 5 minutos e leva poucos por vez: quando varios vencem
+    // juntos (a primeira rodada, com todos sem ultimo envio), despejar tudo
+    // de uma vez encheria o grupo de anuncios em sequencia.
+    let recorrenteEmAndamento = false
+    const enviarRecorrentes = async (): Promise<void> => {
+      if (recorrenteEmAndamento) return
+      recorrenteEmAndamento = true
+      try {
+        const vencidos = dbManager.produtosRecorrentesVencidos(3)
+        for (const produto of vencidos) {
+          if (!produto.id) continue
+
+          // Atualiza o preco antes de repostar: um anuncio recorrente com
+          // preco de tres dias atras e pior que nao postar. Se a loja recusar
+          // a raspagem — hoje a Amazon recusa quase sempre — segue com o preco
+          // guardado, que foi o pedido explicito do testador, mas o log diz
+          // qual dos dois aconteceu.
+          let precoAtualizado = false
+          try {
+            const novo = await scraperManager.scrapeProduct(produto.original_url)
+            if (typeof novo.price === 'number' && novo.price > 0 && novo.price !== produto.price) {
+              dbManager.updateProduct(produto.id, { price: novo.price, original_price: novo.original_price })
+              produto.price = novo.price
+              produto.original_price = novo.original_price
+              precoAtualizado = true
+            } else if (typeof novo.price === 'number' && novo.price === produto.price) {
+              precoAtualizado = true
+            }
+          } catch {
+            // Preco velho e aceitavel aqui; falha de raspagem nao pode impedir
+            // o anuncio recorrente de sair.
+          }
+
+          dbManager.registrarEnvioRecorrente(produto.id)
+          dbManager.addLog({
+            type: 'info',
+            platform: 'system',
+            message: `Produto recorrente: ${produto.title}`,
+            details: `A cada ${produto.recorrencia_horas}h | preço ${precoAtualizado ? 'conferido agora' : 'não pôde ser conferido, usando o último conhecido'}`,
+          })
+
+          for (const plataforma of ['whatsapp', 'telegram'] as const) {
+            await autoRepostProduct(produto, plataforma, dbManager, queueManager, { ignorarRepetido: true })
+          }
+        }
+      } catch (err) {
+        log.error('Erro ao enviar produtos recorrentes:', err)
+      } finally {
+        recorrenteEmAndamento = false
+      }
+    }
+    setInterval(() => { void enviarRecorrentes() }, 5 * 60 * 1000)
+
     const cfg = dbManager.getConfig()
     reagendarBuscaAutomatica()
     if (cfg.auto_scrape_enabled && cfg.niche) startAutoScrape()
@@ -622,6 +680,7 @@ const setupIpcHandlers = (): void => {
   ipcMain.handle('product:update', (_, id: number, data) => dbManager.updateProduct(id, data))
   ipcMain.handle('product:delete', (_, id: number) => dbManager.deleteProduct(id))
   ipcMain.handle('product:delete-many', (_, ids: number[]) => dbManager.deleteProducts(ids))
+  ipcMain.handle('product:set-recurrence', (_, id: number, horas: number | null) => dbManager.definirRecorrencia(id, horas))
   ipcMain.handle('product:scrape', (_, url: string) => scraperManager.scrapeProduct(url))
 
   ipcMain.handle('config:get', () => dbManager.getConfig())
