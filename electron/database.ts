@@ -167,7 +167,13 @@ export class DatabaseManager extends EventEmitter {
         recorrente_ultimo_envio DATETIME
       );
 
-      CREATE INDEX IF NOT EXISTS idx_products_recorrencia ON products(recorrencia_horas);
+      -- NAO criar aqui o indice de recorrencia_horas. Este bloco roda ANTES da
+      -- migracao que adiciona a coluna, e CREATE TABLE IF NOT EXISTS nao
+      -- altera tabela que ja existe. Em banco novo passava; em banco JA
+      -- EXISTENTE o indice referenciava coluna inexistente, o construtor do
+      -- DatabaseManager estourava e o app nao abria mais — foi o que aconteceu
+      -- na 1.9.2 com os dois testadores. O indice e criado na migracao, logo
+      -- depois do ALTER TABLE.
       CREATE INDEX IF NOT EXISTS idx_products_store ON products(store);
       CREATE INDEX IF NOT EXISTS idx_products_source ON products(source);
       CREATE INDEX IF NOT EXISTS idx_products_created ON products(created_at);
