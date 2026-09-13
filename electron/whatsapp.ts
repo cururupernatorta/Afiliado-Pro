@@ -1586,7 +1586,15 @@ monitorados_salvos=[${salvos}]`,
       'socket hang up',
       'network',
     ]
-    const definitivas = ['loja não suportada', 'não conhece este produto', 'fora do programa']
+    const definitivas = [
+      'loja não suportada',
+      'não conhece este produto',
+      'fora do programa',
+      // Link curto da Shopee do qual nao se extrai loja/produto: isso e do
+      // formato do link, nao do momento. Tentar de novo nunca vai mudar.
+      'não tem o código da loja',
+      'não devolveu este produto',
+    ]
     if (definitivas.some((d) => e.includes(d))) return false
     return passageiras.some((x) => e.includes(x))
   }
@@ -1752,6 +1760,18 @@ monitorados_salvos=[${salvos}]`,
 
       const motivo = (error as Error).message
       if (store) this.recepcao.bloqueios[store] = (this.recepcao.bloqueios[store] ?? 0) + 1
+
+      // Falha definitiva tem que SAIR da fila. Sem isto, uma oferta que entrou
+      // na fila por um erro passageiro e depois passou a falhar por um motivo
+      // definitivo ficava presa: `adiarCaptura` nao era chamado, a hora da
+      // proxima tentativa nunca avancava, e o laco de 5 em 5 minutos a pegava
+      // de novo para sempre. No log do testador, tres links da Shopee foram
+      // retentados 14 vezes seguidas, sempre anunciando "tentativa 2" — o
+      // contador nao subia porque nada era regravado.
+      if (!this.falhaEhPassageira(motivo)) {
+        this.dbManager.esquecerCapturaAdiada(url)
+      }
+
       if (this.falhaEhPassageira(motivo)) {
         const marcado = this.dbManager.adiarCaptura(url, origem, motivo)
         this.dbManager.addLog({
