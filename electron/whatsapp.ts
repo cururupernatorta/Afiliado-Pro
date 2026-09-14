@@ -188,7 +188,55 @@ chats_que_mandaram=[${chats}]
 monitorados_salvos=[${salvos}]`,
     })
 
+    this.avisarGrupoAtivoNaoMonitorado(monitorados.map((g) => g.group_id))
+
     this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, reenviosPedidos: 0, canalVazioDentro: 0, canalVazioFora: 0, canalTextoDentro: 0, canalTextoFora: 0, bloqueios: {}, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
+  }
+
+  /**
+   * Avisa quando um grupo ou canal esta postando bastante e NAO esta marcado
+   * como monitorado.
+   *
+   * E a falha de configuracao mais cara que este app tem, porque nao parece
+   * falha: o app abre, conecta, diz "Monitorando 3", e o usuario conclui que
+   * esta funcionando. Um testador passou tres dias assim depois de reinstalar —
+   * o grupo dele mandou 14, 12, 10 e 7 mensagens em janelas seguidas, todas
+   * descartadas em silencio, enquanto ele relatava que "o app nao pega nada".
+   *
+   * Nao serve o aviso que ja existe para link de grupo nao monitorado: aquele
+   * so dispara quando a mensagem passa pelo filtro de tipo E tem link, e
+   * mensagem de grupo nao monitorado e descartada antes disso.
+   *
+   * Ignora conversa individual (@lid, @s.whatsapp.net) e status: ninguem
+   * monitora isso, e avisar viraria ruido que o usuario aprende a ignorar —
+   * que e como um aviso deixa de funcionar.
+   */
+  private avisarGrupoAtivoNaoMonitorado(monitoradosIds: string[]): void {
+    const MINIMO = 3
+    const candidatos = Object.entries(this.recepcao.porChat)
+      .filter(([jid, n]) => {
+        if (n < MINIMO) return false
+        if (monitoradosIds.includes(jid)) return false
+        return jid.endsWith('@g.us') || jid.endsWith('@newsletter')
+      })
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+    if (candidatos.length === 0) return
+
+    const nomes = candidatos.map(([jid, n]) => {
+      const tipo = jid.endsWith('@newsletter') ? 'canal' : 'grupo'
+      return `${tipo} ${jid} (${n} mensagem(ns))`
+    })
+
+    this.dbManager.addLog({
+      type: 'warning',
+      platform: 'whatsapp',
+      message: `${candidatos.length} grupo(s)/canal(is) enviaram ofertas mas NÃO estão sendo monitorados`,
+      details:
+        `${nomes.join(' | ')}. ` +
+        'Tudo que eles postaram foi descartado. Se você quer capturar desses grupos, ' +
+        'abra a aba Grupos e marque-os como monitorados.',
+    })
   }
 
   async connect(): Promise<void> {
