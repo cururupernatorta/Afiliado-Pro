@@ -1453,12 +1453,18 @@ monitorados_salvos=[${salvos}]`,
   /**
    * Avisa quando um canal so entrega aviso, sem o texto da mensagem.
    *
-   * Nao e defeito do app, e nao ha o que consertar do nosso lado. Capturei a
-   * stanza crua direto do servidor, antes de qualquer interpretacao do
-   * Baileys: em 10 de 10 mensagens de canal o no chega como `type=text` com o
-   * bloco `plaintext` VAZIO, sem um byte. Ou seja, o WhatsApp avisa que existe
-   * mensagem e nao manda o conteudo para este aparelho vinculado. Buscar pelo
-   * `newsletterFetchMessages` devolve o mesmo `plaintext` vazio.
+   * Nao e defeito do app. Capturei a stanza crua direto do servidor, antes de
+   * qualquer interpretacao do Baileys: em 10 de 10 mensagens de canal o no
+   * chega como `type=text` com o bloco `plaintext` VAZIO, sem um byte. O
+   * WhatsApp avisa que existe mensagem e nao manda o conteudo para este
+   * aparelho vinculado. Buscar pelo `newsletterFetchMessages` devolve o mesmo
+   * `plaintext` vazio.
+   *
+   * ATENCAO ao concluir daqui que nao tem conserto: a mensagem EXISTE e abre
+   * normalmente no celular, e este mesmo codigo recebeu conteudo de canal com
+   * bytes nos dias 08 e 09/09. Entao o servidor sabe entregar, e parou. Falta
+   * saber se o WhatsApp Web da mesma conta ainda exibe esses canais — se
+   * exibir, existe um caminho de busca que ainda nao encontramos.
    *
    * Isso ja aconteceu com os dois testadores, em maquinas e contas
    * diferentes, e num deles os mesmos canais funcionaram por dois dias antes
@@ -1481,9 +1487,9 @@ monitorados_salvos=[${salvos}]`,
       message: `${mudos.length} canal(is) enviaram só avisos, sem o conteúdo das mensagens`,
       details:
         mudos.map(([jid, c]) => `${nome(jid)}: ${c.vazio} mensagem(ns) sem conteúdo`).join(' | ') +
-        '. O WhatsApp avisa que existe mensagem nova mas NÃO envia o texto para aparelhos vinculados — ' +
-        'verifiquei isso na resposta crua do servidor, e não há correção possível do lado do app. ' +
-        'Enquanto isso, grupos comuns continuam entregando normalmente: prefira monitorar grupos.',
+        '. O WhatsApp avisa que existe mensagem nova mas não envia o texto junto para este aparelho ' +
+        'vinculado — a mensagem existe e aparece normalmente no celular. Enquanto isso não se resolve, ' +
+        'grupos comuns continuam entregando normalmente: prefira monitorar grupos.',
     })
   }
 
