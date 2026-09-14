@@ -295,6 +295,15 @@ export class DatabaseManager extends EventEmitter {
 
       CREATE INDEX IF NOT EXISTS idx_capturas_adiadas_prox ON capturas_adiadas(proxima_em);
 
+      -- Ate onde ja lemos cada canal. O conteudo de canal nao chega por push:
+      -- so o endpoint GetNewsletterMessages devolve o texto, e ele pagina por
+      -- server_id. Sem guardar a marca, cada consulta reprocessaria tudo.
+      CREATE TABLE IF NOT EXISTS canal_leitura (
+        jid TEXT PRIMARY KEY,
+        ultimo_server_id INTEGER NOT NULL,
+        atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL CHECK(type IN ('info', 'warning', 'error', 'success')),
@@ -728,6 +737,30 @@ export class DatabaseManager extends EventEmitter {
     values.push(id)
 
     this.db.prepare(`UPDATE products SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+  }
+
+  // ==================== LEITURA DE CANAIS ====================
+
+  /** Ate qual server_id ja lemos este canal. Nulo = nunca lido. */
+  ultimoLidoDoCanal(jid: string): number | null {
+    const r = this.db
+      .prepare('SELECT ultimo_server_id FROM canal_leitura WHERE jid = ?')
+      .get(jid) as { ultimo_server_id: number } | undefined
+    return r?.ultimo_server_id ?? null
+  }
+
+  /** Avanca a marca. Nunca retrocede: consulta fora de ordem nao pode reabrir o que ja foi lido. */
+  marcarLidoDoCanal(jid: string, serverId: number): void {
+    if (!Number.isFinite(serverId) || serverId <= 0) return
+    this.db
+      .prepare(`
+        INSERT INTO canal_leitura (jid, ultimo_server_id, atualizado_em)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(jid) DO UPDATE SET
+          ultimo_server_id = MAX(canal_leitura.ultimo_server_id, excluded.ultimo_server_id),
+          atualizado_em = datetime('now')
+      `)
+      .run(jid, Math.round(serverId))
   }
 
   // ==================== PRODUTOS RECORRENTES ====================

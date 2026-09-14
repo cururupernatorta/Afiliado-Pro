@@ -96,18 +96,17 @@ export class WhatsAppManager {
   // Teto de pedidos de reenvio por janela de relatorio - ver pedirReenvio.
   private readonly MAX_REENVIOS_POR_JANELA = 15
   // Canais cujo conteudo precisa ser BUSCADO - ver buscarConteudoDeCanais.
-  private canaisParaBuscar = new Set<string>()
-  private buscaCanalTimer: NodeJS.Timeout | null = null
-  private jaLogueiFormatoDoCanal = false
   // Menor server_id que chegou sem corpo, por canal: e o ponto a partir do
   // qual o historico precisa ser pedido - ver buscarConteudoDeCanais.
-  private menorServerIdPendente = new Map<string, number>()
-  private readonly BUSCA_CANAL_DEBOUNCE_MS = 5000
-  private readonly BUSCA_CANAL_QUANTIDADE = 20
   // O `query` do Baileys espera 60s por padrao e nao aceita prazo por chamada.
   // 60s travando o laco de busca e tempo demais numa conexao que cai a cada 50
   // minutos, entao corremos contra um prazo proprio.
   private readonly BUSCA_CANAL_PRAZO_MS = 20000
+  // Leitura periodica dos canais - ver lerCanaisMonitorados.
+  private leituraCanalTimer: NodeJS.Timeout | null = null
+  private lendoCanais = false
+  private readonly LEITURA_CANAL_MS = 2 * 60 * 1000
+  private readonly LEITURA_CANAL_QUANTIDADE = 20
   // A inscricao em canal VENCE - ver assinarCanaisMonitorados.
   private renovarInscricaoTimer: NodeJS.Timeout | null = null
   private readonly RENOVAR_INSCRICAO_MS = 60000
@@ -402,6 +401,7 @@ monitorados_salvos=[${salvos}]`,
           this.startMonitoring()
           this.iniciarRelatorioDeRecepcao()
           this.iniciarRetentativasDeCaptura()
+          this.iniciarLeituraDeCanais()
           void this.assinarCanaisMonitorados()
         }
       })
@@ -681,6 +681,7 @@ monitorados_salvos=[${salvos}]`,
     // (o log dela e gateado por este temporizador estar nulo).
     if (this.renovarInscricaoTimer) { clearTimeout(this.renovarInscricaoTimer); this.renovarInscricaoTimer = null }
     if (this.retentativaTimer) { clearInterval(this.retentativaTimer); this.retentativaTimer = null }
+    if (this.leituraCanalTimer) { clearInterval(this.leituraCanalTimer); this.leituraCanalTimer = null }
     if (!this.sock) return
     const antigo = this.sock
     this.sock = null
@@ -759,6 +760,7 @@ monitorados_salvos=[${salvos}]`,
     // (o log dela e gateado por este temporizador estar nulo).
     if (this.renovarInscricaoTimer) { clearTimeout(this.renovarInscricaoTimer); this.renovarInscricaoTimer = null }
     if (this.retentativaTimer) { clearInterval(this.retentativaTimer); this.retentativaTimer = null }
+    if (this.leituraCanalTimer) { clearInterval(this.leituraCanalTimer); this.leituraCanalTimer = null }
     if (this.sock) {
       try {
         this.sock.end(undefined)
@@ -1234,184 +1236,166 @@ monitorados_salvos=[${salvos}]`,
   }
 
   /**
-   * Busca o conteudo das mensagens de um canal cujo corpo nao veio.
+   * Le as mensagens novas dos canais monitorados e as processa como captura.
    *
-   * ESTE E o conserto do canal do testador, e nao adivinhacao: o log da 1.8.4
-   * fechou a questao. Toda mensagem daquele canal chega com
-   * `motivo=["Message absent from node"]` e um `server_id` - ou seja, o
-   * `<message>` vem SEM bloco `enc` e SEM bloco `plaintext`. Nao ha falha de
-   * criptografia nenhuma; conteudo de canal nem viaja cifrado, viaja em
-   * `plaintext`. O que chega e so o aviso de que existe mensagem nova, com o
-   * numero dela. O corpo tem que ser pedido.
+   * ESTE e o caminho que funciona, e custou uma investigacao inteira. O que
+   * ficou provado, medindo a stanza crua na sessao real:
    *
-   * Por isso pedir redecifrar (`requestPlaceholderResend`) nunca ia resolver:
-   * responde a pergunta errada.
+   *   - A inscricao em canal (`subscribeNewsletterUpdates`) NAO e um feed de
+   *     mensagens. Ela entrega `edit`, `reactions` e `forwards_count` de posts
+   *     que voce ja tem. Post novo nao vem por ali. Capturei 552 mensagens de
+   *     canal num dia: 542 chegaram com o bloco `plaintext` VAZIO.
+   *   - O `newsletterFetchMessages` do Baileys 6.7.24 manda
+   *     `iq(to=<canal>) -> message_updates`, que devolve exatamente esses
+   *     contadores. Nunca o texto.
+   *   - A consulta que devolve o texto e outra, e e a que o WhatsApp Web usa:
+   *     `iq(to=@s.whatsapp.net, xmlns=newsletter) -> messages(count, type='jid',
+   *     jid=<canal>)`. O destino e o SERVIDOR, e o canal vai dentro do no.
+   *     Testada na sessao do dono: devolveu posts de 7532, 7183 e 7277 bytes,
+   *     com preco e link de afiliado.
    *
-   * Junta os canais numa janela curta antes de pedir, porque um canal entrega
-   * dezenas de avisos em rajada e cada aviso viraria um pedido.
+   * Por isso a leitura e por consulta periodica, e nao por evento. A marca
+   * `ultimo_server_id` guarda ate onde ja lemos; sem ela, cada rodada
+   * reprocessaria o mesmo lote.
+   *
+   * Na PRIMEIRA leitura de um canal nada e processado - so a marca e gravada.
+   * Senao o usuario marcaria um canal e levaria uma enxurrada de ofertas
+   * antigas no grupo dele de uma vez.
    */
-  private agendarBuscaDeCanal(jid: string, serverId?: unknown): void {
-    if (!jid.endsWith('@newsletter')) return
-    if (!this.dbManager.getMonitoredGroups('whatsapp').some((g) => g.group_id === jid)) return
-    this.canaisParaBuscar.add(jid)
-
-    // Guarda o MENOR: o pedido tem que comecar antes da mensagem mais antiga
-    // que ficou faltando, senao o buraco no meio nunca e coberto.
-    const numero = Number(serverId)
-    if (Number.isFinite(numero) && numero > 0) {
-      const atual = this.menorServerIdPendente.get(jid)
-      if (atual == null || numero < atual) this.menorServerIdPendente.set(jid, numero)
-    }
-    if (this.buscaCanalTimer) return
-    this.buscaCanalTimer = setTimeout(() => {
-      this.buscaCanalTimer = null
-      void this.buscarConteudoDeCanais()
-    }, this.BUSCA_CANAL_DEBOUNCE_MS)
+  private iniciarLeituraDeCanais(): void {
+    if (this.leituraCanalTimer) clearInterval(this.leituraCanalTimer)
+    this.leituraCanalTimer = setInterval(() => { void this.lerCanaisMonitorados() }, this.LEITURA_CANAL_MS)
+    // Primeira passada logo apos conectar, sem esperar o intervalo inteiro.
+    setTimeout(() => { void this.lerCanaisMonitorados() }, 15000)
   }
 
-  private async buscarConteudoDeCanais(): Promise<void> {
-    const canais = [...this.canaisParaBuscar]
-    this.canaisParaBuscar.clear()
+  private async lerCanaisMonitorados(): Promise<void> {
+    if (this.lendoCanais || this.status !== 'connected' || !this.sock) return
+    this.lendoCanais = true
     const sock = this.sock
-    const buscar = (sock as unknown as {
-      newsletterFetchMessages?: (jid: string, count: number, since?: number, after?: number) => Promise<unknown>
-    })?.newsletterFetchMessages
-    if (!sock || typeof buscar !== 'function' || canais.length === 0) return
+    try {
+      const canais = this.dbManager
+        .getMonitoredGroups('whatsapp')
+        .filter((g) => g.group_id.endsWith('@newsletter'))
 
-    for (const jid of canais) {
-      // Conexao trocou no meio: o resto seria pedido no socket errado.
-      if (this.sock !== sock) return
-      // `after` = a partir de qual mensagem. Sem ele o pedido e "me manda as
-      // ultimas N" sem dizer de onde, e no log do testador esse formato deu
-      // "Timed Out" em 5 de 5 tentativas - o servidor simplesmente nao
-      // respondeu. Como os avisos vazios trazem `server_id`, da para pedir o
-      // trecho exato que faltou. Um a menos porque a propria mensagem que
-      // faltou precisa entrar no resultado.
-      const menor = this.menorServerIdPendente.get(jid)
-      const depoisDe = menor != null && menor > 1 ? menor - 1 : undefined
-      const pedido = 'count=' + String(this.BUSCA_CANAL_QUANTIDADE) + ', after=' + String(depoisDe ?? '-')
-      try {
-        const resposta = await this.comPrazo(
-          buscar.call(sock, jid, this.BUSCA_CANAL_QUANTIDADE, undefined, depoisDe),
-          this.BUSCA_CANAL_PRAZO_MS,
-        )
-        this.menorServerIdPendente.delete(jid)
-        const mensagens = this.extrairMensagensDeCanal(jid, resposta)
-
-        // Se nao veio nada, o formato da resposta e diferente do que este
-        // parser espera - e sem registrar a forma dela a proxima tentativa
-        // seria chute de novo, que e exatamente o que custou caro neste caso.
-        if (mensagens.length === 0 && !this.jaLogueiFormatoDoCanal) {
-          this.jaLogueiFormatoDoCanal = true
-          this.dbManager.addLog({
-            type: 'warning',
-            platform: 'whatsapp',
-            message: 'Busquei o conteudo do canal mas nao reconheci a resposta',
-            details: ('canal=' + jid + ' | pedido=' + pedido + ' | forma=' + this.descreverNo(resposta)).substring(0, 900),
-          })
-          continue
+      for (const canal of canais) {
+        if (this.sock !== sock || this.status !== 'connected') break
+        try {
+          await this.lerUmCanal(sock, canal.group_id, canal.group_name || canal.group_id)
+        } catch (err) {
+          log.warn(`Falha ao ler o canal ${canal.group_id}:`, (err as Error).message)
         }
-
-        let aproveitadas = 0
-        for (const msg of mensagens) {
-          const id = msg.key?.id
-          if (id && this.processedHistoryIds.has(id)) continue
-          aproveitadas++
-          await this.handleIncomingMessage(msg)
-        }
-        if (aproveitadas > 0) {
-          this.dbManager.addLog({
-            type: 'info',
-            platform: 'whatsapp',
-            message: `Conteúdo buscado do canal: ${aproveitadas} mensagem(ns) recuperada(s)`,
-            details: 'canal=' + jid + ' | pedido=' + pedido + ' | encontradas=' + String(mensagens.length),
-          })
-        }
-      } catch (err) {
-        this.dbManager.addLog({
-          type: 'warning',
-          platform: 'whatsapp',
-          message: 'Não consegui buscar o conteúdo de um canal monitorado',
-          details: ('canal=' + jid + ' | pedido=' + pedido + ' | erro=' + (err as Error).message).substring(0, 400),
-        })
       }
+    } finally {
+      this.lendoCanais = false
+    }
+  }
+
+  private async lerUmCanal(sock: ReturnType<typeof makeWASocket>, jid: string, nome: string): Promise<void> {
+    const marca = this.dbManager.ultimoLidoDoCanal(jid)
+    const primeiraVez = marca == null
+
+    const attrs: Record<string, string> = {
+      count: String(primeiraVez ? 5 : this.LEITURA_CANAL_QUANTIDADE),
+      type: 'jid',
+      jid,
+    }
+    if (!primeiraVez) attrs.after = String(marca)
+
+    const consulta = (sock as unknown as {
+      query: (n: unknown) => Promise<unknown>
+      generateMessageTag: () => string
+    })
+    const resposta = await this.comPrazo(
+      consulta.query({
+        tag: 'iq',
+        attrs: { id: consulta.generateMessageTag(), type: 'get', xmlns: 'newsletter', to: '@s.whatsapp.net' },
+        content: [{ tag: 'messages', attrs }],
+      }),
+      this.BUSCA_CANAL_PRAZO_MS,
+    )
+
+    const { mensagens, maiorServerId } = this.lerRespostaDoCanal(jid, resposta)
+    if (maiorServerId > 0) this.dbManager.marcarLidoDoCanal(jid, maiorServerId)
+
+    if (primeiraVez) {
+      this.dbManager.addLog({
+        type: 'info',
+        platform: 'whatsapp',
+        message: `Canal ${nome} conectado à leitura de mensagens`,
+        details: `A partir de agora as novas publicações deste canal são capturadas. As ${mensagens.length} anteriores foram ignoradas para não encher seu grupo de ofertas antigas.`,
+      })
+      return
+    }
+
+    let aproveitadas = 0
+    for (const msg of mensagens) {
+      const id = msg.key?.id
+      if (id && this.processedHistoryIds.has(id)) continue
+      aproveitadas++
+      await this.handleIncomingMessage(msg)
+    }
+    if (aproveitadas > 0) {
+      this.dbManager.addLog({
+        type: 'info',
+        platform: 'whatsapp',
+        message: `${aproveitadas} publicação(ões) nova(s) lida(s) do canal ${nome}`,
+        details: `Até a mensagem ${maiorServerId}.`,
+      })
     }
   }
 
   /**
-   * Monta mensagens a partir da resposta crua do `newsletterFetchMessages`.
+   * Converte a resposta do GetNewsletterMessages em mensagens processaveis.
    *
-   * A resposta e um no binario e o Baileys nao a interpreta. A forma exata nao
-   * esta documentada, entao em vez de assumir um caminho fixo o parser desce a
-   * arvore inteira e aceita qualquer no que carregue um filho `plaintext` -
-   * conteudo de canal e plaintext, entao esse e o sinal confiavel, venha ele
-   * dentro de `message_updates`, de `messages` ou de outro invólucro.
+   * Forma: `iq > messages{jid} > message{server_id,id,type,t}(plaintext<bytes>)`.
+   * Vem misturado com nos de atualizacao (`edit`, `reactions`,
+   * `forwards_count`) que tem `plaintext` vazio — esses sao descartados aqui, e
+   * nao sao erro: sao contadores do mesmo canal, e foram justamente o que nos
+   * confundiu por duas semanas.
    */
-  private extrairMensagensDeCanal(jid: string, node: unknown): proto.IWebMessageInfo[] {
-    const encontradas: proto.IWebMessageInfo[] = []
+  private lerRespostaDoCanal(jid: string, resposta: unknown): { mensagens: proto.IWebMessageInfo[]; maiorServerId: number } {
+    const mensagens: proto.IWebMessageInfo[] = []
+    let maiorServerId = 0
 
-    const desce = (atual: unknown, paiAttrs: Record<string, string>): void => {
-      if (!atual || typeof atual !== 'object') return
-      const no = atual as { tag?: string; attrs?: Record<string, string>; content?: unknown }
-      const attrs = { ...paiAttrs, ...(no.attrs ?? {}) }
+    const desce = (no: unknown): void => {
+      if (!no || typeof no !== 'object') return
+      const n = no as { tag?: string; attrs?: Record<string, string>; content?: unknown }
 
-      if (no.tag === 'plaintext' && no.content instanceof Uint8Array) {
-        try {
-          const corpo = proto.Message.decode(no.content)
-          const serverId = attrs.server_id ?? attrs.id
-          encontradas.push({
-            key: {
-              remoteJid: jid,
-              fromMe: false,
-              id: attrs.id ?? ('SRV' + String(serverId)),
-              ...(serverId ? { server_id: serverId } : {}),
-            },
-            messageTimestamp: Number(attrs.t) || Math.floor(Date.now() / 1000),
-            message: corpo,
-            broadcast: true,
-          } as proto.IWebMessageInfo)
-        } catch (err) {
-          log.warn('Conteúdo de canal não decodificou:', (err as Error).message)
+      if (n.tag === 'message') {
+        const sid = Number(n.attrs?.server_id)
+        if (Number.isFinite(sid) && sid > maiorServerId) maiorServerId = sid
+
+        const corpo = getAllBinaryNodeChildren(n as never)
+          .find((f) => f.tag === 'plaintext' && f.content instanceof Uint8Array && (f.content as Uint8Array).length > 0)
+        if (corpo) {
+          try {
+            mensagens.push({
+              key: {
+                remoteJid: jid,
+                fromMe: false,
+                id: n.attrs?.id ?? ('SRV' + String(sid)),
+              },
+              messageTimestamp: Number(n.attrs?.t) || Math.floor(Date.now() / 1000),
+              message: proto.Message.decode(corpo.content as Uint8Array),
+              broadcast: true,
+            } as proto.IWebMessageInfo)
+          } catch (err) {
+            log.warn('Publicação de canal não decodificou:', (err as Error).message)
+          }
         }
         return
       }
 
-      for (const filho of getAllBinaryNodeChildren(no as never)) desce(filho, attrs)
+      for (const f of getAllBinaryNodeChildren(n as never)) desce(f)
     }
 
-    desce(node, {})
-    return encontradas
+    desce(resposta)
+    return { mensagens, maiorServerId }
   }
 
-  /**
-   * Resumo da forma de um no binario, para quando o parser nao reconhece.
-   *
-   * O limite era 3 e a resposta do canal tem `iq > message_updates > messages >
-   * message > filhos` - exatamente 4. Resultado: o log saiu
-   * `message(?,?,?)`, e aquele `?` nao era tag desconhecida, era o meu proprio
-   * corte. Justamente onde estava a informacao que interessava. Vai fundo o
-   * bastante agora, e diz tambem o NOME dos atributos: e o que separa um
-   * `plaintext` de conteudo de um `views_count` de estatistica.
-   */
-  private descreverNo(node: unknown, profundidade = 0): string {
-    if (!node || typeof node !== 'object' || profundidade > 7) return '...'
-    const no = node as { tag?: string; attrs?: Record<string, string>; content?: unknown }
-    const filhos = getAllBinaryNodeChildren(no as never)
-    const chaves = Object.keys(no.attrs ?? {})
-    const marca = chaves.length > 0 ? '{' + chaves.slice(0, 6).join(',') + '}' : ''
-    const dentro = filhos.length > 0
-      ? '(' + filhos.slice(0, 8).map((f) => this.descreverNo(f, profundidade + 1)).join(',') + ')'
-      : no.content instanceof Uint8Array
-        ? '<' + String(no.content.length) + 'bytes>'
-        : typeof no.content === 'string' ? '<texto>'
-          // Explicito de proposito: um `plaintext` sem nada saia igual a um no
-          // comum, e foi quase lido como "conteudo que nao sei ler" quando na
-          // verdade era "o servidor mandou a etiqueta vazia" - conclusoes
-          // opostas. O decodificador do Baileys (WABinary/decode.js) so
-          // preenche `content` quando o no traz dados de fato.
-          : no.content == null ? '<vazio>' : '<' + typeof no.content + '>'
-    return String(no.tag ?? 'sem-tag') + marca + dentro
-  }
+
+
 
   /**
    * Mede a hipotese que sobrou de pe sobre o conteudo de canal chegar vazio.
@@ -1587,12 +1571,17 @@ monitorados_salvos=[${salvos}]`,
         this.recepcao.stubs[nome] = (this.recepcao.stubs[nome] ?? 0) + 1
       }
       this.classificarMensagemDeCanal(msg.key.remoteJid, false)
-      this.diagnosticarMensagemIlegivel(msg)
-      // Canal: o corpo nao veio e precisa ser buscado (o caminho que resolve).
-      // Grupo comum: ai sim e decifração, e o reenvio e o que cabe.
-      if (msg.key.remoteJid?.endsWith('@newsletter')) {
-        this.agendarBuscaDeCanal(msg.key.remoteJid, (msg.key as { server_id?: unknown }).server_id)
-      } else {
+
+      // Canal: mensagem vazia aqui e ESPERADA e nao e erro. A inscricao em
+      // canal entrega `edit`, `reactions` e `forwards_count` de posts que ja
+      // existem — nunca o texto de um post novo. O conteudo vem por
+      // `lerCanaisMonitorados`, que consulta o servidor. Tratar isso como
+      // "mensagem ilegivel" enchia o log de centenas de linhas por dia e
+      // escondia problema de verdade.
+      //
+      // Grupo comum: ai sim e falha de decifração, e o reenvio e o que cabe.
+      if (!msg.key.remoteJid?.endsWith('@newsletter')) {
+        this.diagnosticarMensagemIlegivel(msg)
         void this.pedirReenvio(msg)
       }
       return
