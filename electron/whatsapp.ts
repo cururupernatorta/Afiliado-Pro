@@ -113,6 +113,8 @@ export class WhatsAppManager {
   private readonly RENOVAR_INSCRICAO_MS = 60000
   // Instante da ultima inscricao aceita, por canal - ver classificarMensagemDeCanal.
   private inscritoEm = new Map<string, number>()
+  // Vazias x com texto POR canal na janela do relatorio - ver avisarCanalSemConteudo.
+  private canalPorJid = new Map<string, { vazio: number; texto: number }>()
   private jaOlheiEstadoDosCanais = false
   private retentativaTimer: NodeJS.Timeout | null = null
   // Instante da ultima resposta de historico - ver conferirRespostaDaVarredura.
@@ -189,6 +191,8 @@ monitorados_salvos=[${salvos}]`,
     })
 
     this.avisarGrupoAtivoNaoMonitorado(monitorados.map((g) => g.group_id))
+    this.avisarCanalSemConteudo()
+    this.canalPorJid.clear()
 
     this.recepcao = { lotes: 0, mensagens: 0, porTipo: {}, porChat: {}, flushesForcados: 0, proprias: 0, jaVistas: 0, reenviosPedidos: 0, canalVazioDentro: 0, canalVazioFora: 0, canalTextoDentro: 0, canalTextoFora: 0, bloqueios: {}, aposFiltroDeTipo: 0, semConteudo: 0, stubs: {}, semTexto: 0, comTexto: 0, deGrupoMonitorado: 0, comLink: 0 }
   }
@@ -1439,6 +1443,48 @@ monitorados_salvos=[${salvos}]`,
       if (dentro) this.recepcao.canalVazioDentro++
       else this.recepcao.canalVazioFora++
     }
+
+    const atual = this.canalPorJid.get(jid) ?? { vazio: 0, texto: 0 }
+    if (temConteudo) atual.texto++
+    else atual.vazio++
+    this.canalPorJid.set(jid, atual)
+  }
+
+  /**
+   * Avisa quando um canal so entrega aviso, sem o texto da mensagem.
+   *
+   * Nao e defeito do app, e nao ha o que consertar do nosso lado. Capturei a
+   * stanza crua direto do servidor, antes de qualquer interpretacao do
+   * Baileys: em 10 de 10 mensagens de canal o no chega como `type=text` com o
+   * bloco `plaintext` VAZIO, sem um byte. Ou seja, o WhatsApp avisa que existe
+   * mensagem e nao manda o conteudo para este aparelho vinculado. Buscar pelo
+   * `newsletterFetchMessages` devolve o mesmo `plaintext` vazio.
+   *
+   * Isso ja aconteceu com os dois testadores, em maquinas e contas
+   * diferentes, e num deles os mesmos canais funcionaram por dois dias antes
+   * de parar. Sem este aviso o usuario fica esperando para sempre — foi o que
+   * aconteceu por quase duas semanas, com o app parecendo saudavel.
+   *
+   * O corte de 5 evita acusar canal de pouco movimento numa janela fraca.
+   */
+  private avisarCanalSemConteudo(): void {
+    const mudos = [...this.canalPorJid.entries()].filter(([, c]) => c.texto === 0 && c.vazio >= 5)
+    if (mudos.length === 0) return
+
+    const monitorados = this.dbManager.getMonitoredGroups('whatsapp')
+    const nome = (jid: string): string =>
+      monitorados.find((g) => g.group_id === jid)?.group_name || jid
+
+    this.dbManager.addLog({
+      type: 'warning',
+      platform: 'whatsapp',
+      message: `${mudos.length} canal(is) enviaram só avisos, sem o conteúdo das mensagens`,
+      details:
+        mudos.map(([jid, c]) => `${nome(jid)}: ${c.vazio} mensagem(ns) sem conteúdo`).join(' | ') +
+        '. O WhatsApp avisa que existe mensagem nova mas NÃO envia o texto para aparelhos vinculados — ' +
+        'verifiquei isso na resposta crua do servidor, e não há correção possível do lado do app. ' +
+        'Enquanto isso, grupos comuns continuam entregando normalmente: prefira monitorar grupos.',
+    })
   }
 
   /**
