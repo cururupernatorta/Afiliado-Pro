@@ -126,6 +126,65 @@ export function urlBaseDoProduto(url: string): string {
   return String(url || '').split('#')[0].split('?')[0]
 }
 
+/**
+ * Identificador do produto DENTRO da loja, quando dá para extrair.
+ *
+ * A URL base não basta: o mesmo produto circula em formas diferentes que
+ * apontam para o mesmo item, e comparar texto trata cada forma como um produto
+ * novo. Medido no banco real do dono — 5 itens da Amazon viraram 11 linhas e
+ * saíram repetidos para o mesmo grupo, um deles 3 vezes:
+ *
+ *     /dp/B0FYQ5TQDL/        (com barra no fim)
+ *     /dp/B0FYQ5TQDL         (sem barra)
+ *     /gp/product/B0FYQ5TQDL (a forma antiga, mesmo produto)
+ *
+ * Cada uma virou uma linha com id próprio, e a barreira de anúncio repetido
+ * compara por id — ela não tinha como saber que eram o mesmo teclado.
+ *
+ * Devolve `null` quando a loja não é reconhecida ou o identificador não está
+ * na URL; aí a comparação por URL base continua valendo.
+ */
+export function chaveDeLojaDoProduto(url: string): string | null {
+  let texto = String(url || '')
+  // Link de compartilhamento do AliExpress carrega o item de verdade
+  // percent-encoded dentro de `redirectUrl`.
+  try {
+    texto = decodeURIComponent(texto)
+  } catch {
+    // URL com % solto não é motivo para perder a captura: segue com o texto cru.
+  }
+
+  let m: RegExpMatchArray | null
+  if ((m = texto.match(/\/(?:dp|gp\/product)\/([A-Za-z0-9]{10})(?:[/?#]|$)/))) {
+    return 'amazon:' + m[1].toUpperCase()
+  }
+  if ((m = texto.match(/MLB-?(\d{6,})/i))) return 'mercado_livre:' + m[1]
+  if ((m = texto.match(/\/item\/(\d{6,})\.html/))) return 'aliexpress:' + m[1]
+  if ((m = texto.match(/i\.(\d+)\.(\d+)/))) return 'shopee:' + m[1] + '.' + m[2]
+  return null
+}
+
+/**
+ * A URL como ela deve ser GRAVADA na coluna `original_url`.
+ *
+ * Em geral é a URL sem rastreio. A exceção existe porque o AliExpress resolve
+ * link curto para uma forma de compartilhamento que guarda o produto DENTRO da
+ * query:
+ *
+ *     star.aliexpress.com/share/share.htm?...&redirectUrl=...%2Fitem%2F1005005933550269.html
+ *
+ * Cortar a query aí apagaria o identificador e deixaria `share.htm` puro —
+ * igual para TODOS os produtos que chegam nessa forma. Seria pior que o
+ * problema original: em vez de um produto virar duas linhas, produtos
+ * diferentes passariam por um só. Quando o corte destrói o identificador, a
+ * URL fica inteira.
+ */
+export function urlParaGuardar(url: string): string {
+  const base = urlBaseDoProduto(url)
+  if (chaveDeLojaDoProduto(url) && !chaveDeLojaDoProduto(base)) return String(url)
+  return base
+}
+
 export class DatabaseManager extends EventEmitter {
   private db: Database.Database
 
@@ -613,13 +672,37 @@ export class DatabaseManager extends EventEmitter {
     return this.db.prepare('SELECT * FROM products WHERE id = ?').get(id) as Product | undefined
   }
 
+  /**
+   * A linha deste produto, se ele já estiver no banco.
+   *
+   * Procura primeiro pelo identificador da loja (ASIN, MLB, item do AliExpress,
+   * i.loja.item da Shopee), que é o mesmo em todas as formas de URL do mesmo
+   * produto, e só depois compara pela URL base. É este método que decide o que
+   * é duplicado: `productExistsByUrl` delega para cá justamente para os dois
+   * nunca discordarem — quando discordavam, a checagem de duplicado achava a
+   * linha e a busca não, e `product:create` devolvia "Não consegui salvar nem
+   * localizar este produto" para uma URL com parâmetros de rastreio.
+   */
   getProductByUrl(url: string): Product | undefined {
-    // Precisa usar a MESMA normalização do `productExistsByUrl`, senão os dois
-    // discordam: a checagem de duplicado encontra a linha (compara pela URL
-    // base) e a busca não (comparava a URL inteira). Isso quebrava o caminho de
-    // `product:create` que atualiza um produto já existente — ele achava
-    // duplicado, não conseguia localizar, e devolvia "Não consegui salvar nem
-    // localizar este produto" para uma URL com parâmetros de rastreio.
+    const chave = chaveDeLojaDoProduto(url)
+    if (chave) {
+      // O LIKE é só uma peneira barata; quem decide é a comparação da chave em
+      // JS. Sem essa segunda conferência, `%MLB66637233%` casaria com
+      // MLB666372339 — um produto diferente cujo código apenas começa igual.
+      const token = chave.slice(chave.indexOf(':') + 1)
+      const candidatos = this.db
+        .prepare('SELECT * FROM products WHERE original_url LIKE ?')
+        .all('%' + token + '%') as Product[]
+      const achado = candidatos.find((p) => chaveDeLojaDoProduto(p.original_url) === chave)
+      // Sem volta para a comparação por URL base: quando o identificador existe,
+      // ele é a resposta, e a base pode ser enganosa. Um link de
+      // compartilhamento do AliExpress tem base `share.htm` para TODO produto —
+      // medido no teste contra o banco real, dois produtos diferentes foram
+      // reconhecidos como o mesmo por esse caminho, que é pior do que o defeito
+      // que esta correção veio resolver.
+      return achado
+    }
+
     const base = urlBaseDoProduto(url)
     return this.db
       .prepare('SELECT * FROM products WHERE original_url = ? OR original_url LIKE ? OR original_url LIKE ? LIMIT 1')
@@ -670,14 +753,7 @@ export class DatabaseManager extends EventEmitter {
   }
 
   productExistsByUrl(url: string): boolean {
-    // Compara pela URL base, mas sem juntar produtos diferentes por engano:
-    // um `LIKE base || '%'` solto casaria MLB66637233 com MLB666372339. Por
-    // isso os curingas exigem o `?` ou o `#` logo depois da base.
-    const base = urlBaseDoProduto(url)
-    const row = this.db
-      .prepare('SELECT 1 FROM products WHERE original_url = ? OR original_url LIKE ? OR original_url LIKE ?')
-      .get(base, base + '?%', base + '#%')
-    return !!row
+    return !!this.getProductByUrl(url)
   }
 
   createProduct(product: Omit<Product, 'id' | 'created_at' | 'updated_at'>): Product | null {
@@ -709,8 +785,10 @@ export class DatabaseManager extends EventEmitter {
       product.image_path ?? null,
       product.description ?? null,
       // Grava já sem o rastreio: o produto é o mesmo, e assim as comparações
-      // futuras batem direto, sem depender dos curingas acima.
-      urlBaseDoProduto(product.original_url),
+      // futuras batem direto, sem depender dos curingas acima. A query só é
+      // mantida quando é ela que carrega o identificador do produto — ver
+      // `urlParaGuardar`.
+      urlParaGuardar(product.original_url),
       product.affiliate_url ?? null,
       product.pix_price ?? null,
       product.coupon_url ?? null,

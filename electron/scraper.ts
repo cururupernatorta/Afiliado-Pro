@@ -525,7 +525,13 @@ export class ScraperManager {
     }
   }
 
-  private async scrapeAmazon(url: string): Promise<Partial<Product>> {
+  private async scrapeAmazon(rawUrl: string): Promise<Partial<Product>> {
+    // Resolve antes de raspar, igual ao AliExpress e ao Mercado Livre. Aqui não
+    // é só para a raspagem funcionar: o link curto da Amazon não carrega o ASIN,
+    // e é o ASIN que diz que dois links são o mesmo produto. Sem isto, o mesmo
+    // item chegando por dois links curtos vira duas linhas no banco e o grupo
+    // recebe o anúncio duas vezes — ver `resolveAmazonProductUrl`.
+    const url = await this.affiliateManager.resolveAmazonProductUrl(rawUrl)
     const { $, html } = await this.fetchPage(url)
 
     if (this.looksBlocked(html)) {

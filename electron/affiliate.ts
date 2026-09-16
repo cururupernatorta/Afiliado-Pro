@@ -180,6 +180,38 @@ export class AffiliateManager {
     return this.followRedirects(url)
   }
 
+  /**
+   * URL canônica do produto na Amazon: `https://<loja>/dp/<ASIN>`.
+   *
+   * Público porque o ScraperManager chama isto ANTES de raspar, como já faz com
+   * AliExpress e Mercado Livre — e aqui por um motivo a mais, que custou anúncio
+   * repetido no grupo do testador: o encurtador da própria Amazon
+   * (`link.amazon/B0074jc56`) não carrega o ASIN. Dois links curtos do MESMO
+   * produto viravam dois produtos no banco, cada um com id próprio, e a barreira
+   * de anúncio repetido compara por id. Medido no banco real: 82 capturas por
+   * link curto, 4 produtos gravados em duas ou três linhas, e todas as linhas
+   * foram enviadas ao grupo.
+   *
+   * Com o ASIN já na URL não gasta requisição nenhuma. Sem ele, resolve o
+   * redirecionamento. Se nem assim aparecer, devolve a URL recebida: captura com
+   * risco de repetir ainda é melhor que captura nenhuma.
+   */
+  async resolveAmazonProductUrl(url: string): Promise<string> {
+    try {
+      let asin = this.extractAmazonAsin(url)
+      let resolvida = url
+      if (!asin) {
+        resolvida = await this.resolveAmazonRedirect(url)
+        asin = this.extractAmazonAsin(resolvida)
+      }
+      if (!asin) return url
+      return `https://${new URL(resolvida).hostname}/dp/${asin}`
+    } catch (err) {
+      log.warn('Falha ao resolver o link da Amazon, seguindo com o original:', (err as Error).message)
+      return url
+    }
+  }
+
   private async convertAmazon(url: string, config: any): Promise<string | null> {
     if (!config.amazon_tag) {
       log.warn('Amazon Tag não configurada')

@@ -1769,6 +1769,12 @@ monitorados_salvos=[${salvos}]`,
         }
       }
       log.warn(`Link de grupo monitorado ignorado - loja nao reconhecida: ${url}`)
+      // Loja nao suportada nao melhora com o tempo: se este link estava na fila
+      // de retentativa, sai agora. Sem isto ele voltava de 5 em 5 minutos para
+      // sempre — no log do dono, um link do Magazine Luiza foi retentado a cada
+      // 5 minutos por mais de meia hora, sempre anunciando "tentativa 2", porque
+      // este caminho volta antes de gravar qualquer coisa.
+      this.dbManager.esquecerCapturaAdiada(url)
       this.dbManager.addLog({
         type: 'warning',
         platform: 'whatsapp',
