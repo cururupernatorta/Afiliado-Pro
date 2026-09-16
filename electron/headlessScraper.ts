@@ -56,8 +56,16 @@ export async function renderPageHtml(url: string, options: RenderOptions = {}): 
         contextIsolation: true,
         images: false, // não carrega imagens - só queremos o HTML/DOM, isso acelera bastante
         partition: partitionName,
+        // Página de produto (Shopee, AliExpress, Amazon) costuma ter vídeo que
+        // toca sozinho. Janela invisível continua tocando som, então o usuário
+        // ouvia o áudio do anúncio do nada enquanto o app raspava a oferta.
+        autoplayPolicy: 'document-user-activation-required',
       },
     })
+
+    // Garantia extra: mesmo que algum player ignore a política de autoplay,
+    // nada desta janela sai no alto-falante.
+    win.webContents.setAudioMuted(true)
 
     // Bloqueia popups/novas janelas que o site tente abrir (ex: banners, redirecionamentos de app)
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))

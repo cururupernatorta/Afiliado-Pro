@@ -283,8 +283,10 @@ export class MercadoLivreLinkGenerator {
     try {
       win = new BrowserWindow({
         show: false,
-        webPreferences: { partition: ML_LINK_PARTITION, images: false },
+        webPreferences: { partition: ML_LINK_PARTITION, images: false, autoplayPolicy: 'document-user-activation-required' },
       })
+      // Janela invisível: nada dela pode tocar som no computador do usuário.
+      win.webContents.setAudioMuted(true)
       await win.loadURL(LINKBUILDER_URL)
 
       const raw = (await win.webContents.executeJavaScript(`
