@@ -1,3 +1,5 @@
+import { DEFAULT_TEMPLATE_TEXT } from '../../electron/messageFormat'
+
 // Mock de window.electronAPI usado apenas quando o app roda fora do Electron
 // (ex.: `vite` no navegador, para inspecionar visualmente o redesign). O build
 // real do Electron sempre expõe window.electronAPI via preload, então este
@@ -70,11 +72,13 @@ export function installElectronMockIfNeeded() {
     messageTemplateCreate: async (template: any) => ({ id: Date.now(), created_at: new Date().toISOString(), ...template }),
     messageTemplateUpdate: async () => {},
     messageTemplateDelete: async () => {},
-    messageTemplateGetDefault: async () => '*{title}*\n\n💰 {price_line}\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}',
+    // Mesmo texto do Electron, importado: uma copia aqui ja divergiu do padrao real.
+    messageTemplateGetDefault: async () => DEFAULT_TEMPLATE_TEXT,
     previewMessage: async () => '',
 
     updateCheck: async () => {},
     updateInstall: async () => {},
+    updateDownload: async () => {},
     getAppVersion: async () => '0.0.0-dev',
     onUpdateChecking: noop,
     onUpdateAvailable: noop,

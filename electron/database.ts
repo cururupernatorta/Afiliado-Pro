@@ -61,6 +61,8 @@ export interface Config {
   auto_scrape_interval_hours: number
   auto_scrape_interval_minutes: number
   group_link?: string
+  /** Baixar e instalar versão nova sozinho. Ausente conta como LIGADO — ver main.ts. */
+  auto_update_enabled?: boolean
 }
 
 export interface GroupMonitor {
@@ -431,8 +433,34 @@ export class DatabaseManager extends EventEmitter {
       if (!hist.some((c) => c.name === 'price')) {
         this.db.exec('ALTER TABLE send_history ADD COLUMN price REAL')
       }
+
+      // Memória de links recebidos: `meli.la/xxx` e link de agregador não
+      // carregam o código do produto. Ver produtoPorLinkRecebido.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS links_recebidos (
+          url TEXT PRIMARY KEY,
+          product_id INTEGER NOT NULL,
+          visto_em DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `)
     } catch (err) {
       log.error('Falha na migração de cupom/histórico de envio:', err)
+    }
+
+    // Migração: escolha de atualizar sozinho.
+    //
+    // DEFAULT 1 de propósito: o ALTER TABLE preenche a linha que já existe com
+    // o padrão, então quem atualiza continua recebendo versão nova sozinho. Se
+    // entrasse como 0, os testadores parariam de receber correções em silêncio
+    // — e a correção seguinte nunca chegaria para consertar isso.
+    try {
+      const cfgCols = this.db.prepare('PRAGMA table_info(config)').all() as Array<{ name: string }>
+      if (!cfgCols.some((c) => c.name === 'auto_update_enabled')) {
+        this.db.exec('ALTER TABLE config ADD COLUMN auto_update_enabled INTEGER DEFAULT 1')
+        log.info('Migração: coluna auto_update_enabled adicionada à tabela config')
+      }
+    } catch (err) {
+      log.error('Falha na migração de auto_update_enabled:', err)
     }
 
     // Migração: adiciona aliexpress_tracking_id em bancos já existentes
@@ -994,6 +1022,56 @@ export class DatabaseManager extends EventEmitter {
     return r.c
   }
 
+  // ==================== LINKS RECEBIDOS ====================
+
+  /**
+   * Chave do link recebido: a URL exata, só sem âncora.
+   *
+   * De propósito NÃO usa `urlBaseDoProduto`. Encurtador e agregador podem
+   * guardar a identidade do produto na query, e cortar a query juntaria
+   * produtos diferentes numa chave só. Errar aqui não é inofensivo: o app
+   * acharia que uma oferta NOVA já é conhecida e nunca a anunciaria. Errar para
+   * o outro lado custa só uma raspagem.
+   */
+  private chaveDoLinkRecebido(url: string): string {
+    return String(url || '').split('#')[0].trim()
+  }
+
+  /** Grava que este link levou a este produto. */
+  lembrarLinkRecebido(url: string, productId: number): void {
+    const chave = this.chaveDoLinkRecebido(url)
+    if (!chave || !productId) return
+    this.db
+      .prepare(`
+        INSERT INTO links_recebidos (url, product_id, visto_em) VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(url) DO UPDATE SET product_id = excluded.product_id, visto_em = CURRENT_TIMESTAMP
+      `)
+      .run(chave, productId)
+  }
+
+  /**
+   * O produto a que este link já levou.
+   *
+   * Existe porque `meli.la/xxx` e link de agregador não carregam o código do
+   * produto: sem esta memória, o app só descobria que a oferta era repetida
+   * DEPOIS de raspar a página, e canal posta a mesma oferta várias vezes.
+   *
+   * Só vale para link visto nos últimos 30 dias — prazo por precaução, para um
+   * encurtador reaproveitado não apontar para um produto velho. Produto apagado
+   * pelo usuário também não volta: o JOIN simplesmente não acha nada.
+   */
+  produtoPorLinkRecebido(url: string): Product | undefined {
+    const chave = this.chaveDoLinkRecebido(url)
+    if (!chave) return undefined
+    return this.db
+      .prepare(`
+        SELECT p.* FROM links_recebidos l
+        JOIN products p ON p.id = l.product_id
+        WHERE l.url = ? AND l.visto_em >= datetime('now', '-30 days')
+      `)
+      .get(chave) as Product | undefined
+  }
+
   // ==================== CAPTURAS ADIADAS ====================
 
   /**
@@ -1114,6 +1192,7 @@ export class DatabaseManager extends EventEmitter {
         auto_scrape_interval_hours: 6,
         auto_scrape_interval_minutes: 360,
         group_link: '',
+        auto_update_enabled: true,
       }
     }
     return {

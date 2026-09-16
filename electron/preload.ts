@@ -77,6 +77,7 @@ export interface ElectronAPI {
   // Auto Update
   updateCheck: () => Promise<void>
   updateInstall: () => Promise<void>
+  updateDownload: () => Promise<void>
   getAppVersion: () => Promise<string>
   onUpdateChecking: (callback: () => void) => () => void
   onUpdateAvailable: (callback: (info: any) => void) => () => void
@@ -164,6 +165,7 @@ const api: ElectronAPI = {
   // Auto Update
   updateCheck: () => ipcRenderer.invoke('update:check'),
   updateInstall: () => ipcRenderer.invoke('update:install'),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   onUpdateChecking: (callback) => {
     const handler = () => callback()

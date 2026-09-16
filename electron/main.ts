@@ -115,6 +115,38 @@ async function ensureCouponUrl(product: { coupon_url?: string }): Promise<string
 }
 
 // ==================== AUTO UPDATE ====================
+/**
+ * A atualização automática está ligada?
+ *
+ * Valor ausente conta como LIGADA. É por ela que as correções chegam aos
+ * testadores sem ninguém fazer nada: se um banco antigo, sem a coluna, fosse
+ * lido como "desligada", o app pararia de se atualizar em silêncio — e a
+ * próxima correção nunca chegaria à máquina de quem mais precisa dela.
+ */
+function atualizacaoAutomaticaLigada(): boolean {
+  const valor = dbManager?.getConfig()?.auto_update_enabled
+  return valor === undefined || valor === null ? true : !!valor
+}
+
+// O usuário clicou em "Baixar e instalar" com a atualização automática
+// desligada. Ver ipcMain 'update:download'.
+let instalacaoConsentida = false
+
+/**
+ * Aplica ao electron-updater a escolha de atualizar sozinho.
+ *
+ * Desligada, o app continua PROCURANDO versão nova e avisando, mas não baixa
+ * nada nem instala ao fechar. Antes não havia escolha: a versão nova baixava
+ * sozinha e entrava no próximo encerramento, e o "Depois" do aviso só adiava a
+ * mensagem.
+ */
+function aplicarPreferenciaDeAtualizacao(): void {
+  const ligada = atualizacaoAutomaticaLigada()
+  autoUpdater.autoDownload = ligada
+  autoUpdater.autoInstallOnAppQuit = ligada || instalacaoConsentida
+  log.info(`Atualização automática ${ligada ? 'ligada' : 'desligada'}`)
+}
+
 function setupAutoUpdater(): void {
   if (isDev) {
     log.info('Modo desenvolvimento — auto-update desabilitado')
@@ -122,8 +154,7 @@ function setupAutoUpdater(): void {
   }
 
   autoUpdater.logger = log as any
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  aplicarPreferenciaDeAtualizacao()
 
   autoUpdater.on('checking-for-update', () => {
     log.info('Verificando atualizacoes...')
@@ -132,15 +163,21 @@ function setupAutoUpdater(): void {
 
   autoUpdater.on('update-available', (info) => {
     log.info('Atualizacao disponivel:', info.version)
+    const automatica = atualizacaoAutomaticaLigada()
     sendToRenderer('update:available', {
       version: info.version,
       releaseDate: info.releaseDate,
+      // O aviso precisa saber se a versão já está baixando ou se espera o
+      // clique do usuário.
+      automatica,
     })
     dbManager.addLog({
       type: 'info',
       platform: 'system',
       message: `Nova versão disponível: v${info.version}`,
-      details: 'Baixando automaticamente em segundo plano...',
+      details: automatica
+        ? 'Baixando automaticamente em segundo plano...'
+        : 'Atualização automática desligada: nada foi baixado. Para instalar, clique em "Baixar e instalar" no aviso ou em Configurações.',
     })
   })
 
@@ -692,6 +729,17 @@ const setupIpcHandlers = (): void => {
     // Credencial nova do AliExpress merece uma tentativa imediata, sem esperar
     // a trava de 6h que uma credencial inválida deixou armada.
     affiliateManager.resetarBloqueioAliExpress()
+    // Ligar ou desligar a atualização automática vale na hora. Ao religar,
+    // procura de novo: a versão que apareceu enquanto estava desligada não foi
+    // baixada, e sem esta busca só voltaria na verificação de 4 em 4 horas.
+    if (config && typeof config === 'object' && 'auto_update_enabled' in config) {
+      aplicarPreferenciaDeAtualizacao()
+      if (!isDev && atualizacaoAutomaticaLigada()) {
+        autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+          log.error('Falha ao verificar updates apos religar:', err)
+        })
+      }
+    }
   })
   ipcMain.handle('whatsapp:reception-now', () => whatsappManager.recepcaoAgora())
   ipcMain.handle('whatsapp:sweep-history', async (_, horas: number) => {
@@ -750,6 +798,22 @@ const setupIpcHandlers = (): void => {
 
   // Auto Update
   ipcMain.handle('update:check', () => autoUpdater.checkForUpdatesAndNotify())
+  // Download pedido pelo usuário com a atualização automática desligada.
+  //
+  // O clique em "Baixar e instalar" é o consentimento para ESTA versão: a
+  // instalação ao fechar é religada. Sem isto, quem baixasse e escolhesse
+  // "Depois" no aviso seguinte ficaria com a versão baixada e nunca instalada.
+  ipcMain.handle('update:download', async () => {
+    if (isDev) return
+    instalacaoConsentida = true
+    autoUpdater.autoInstallOnAppQuit = true
+    try {
+      await autoUpdater.downloadUpdate()
+    } catch (err) {
+      log.error('Falha ao baixar atualizacao:', err)
+      sendToRenderer('update:error', (err as Error).message)
+    }
+  })
   ipcMain.handle('update:install', () => {
     autoUpdater.quitAndInstall(false, true)
   })

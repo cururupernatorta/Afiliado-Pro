@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FileText, Plus, Trash2, Edit3, X, Save, Loader2 } from 'lucide-react'
 import { Button } from '../components/ui/button'
+import { formatMessage } from '../../electron/messageFormat'
+import type { ProductLike } from '../../electron/messageFormat'
 
 interface MessageTemplate {
   id: number
@@ -12,33 +14,39 @@ interface MessageTemplate {
 
 const PLACEHOLDERS = [
   { token: '{title}', desc: 'Nome do produto' },
+  { token: '{discount_line}', desc: 'Linha "🔥 58% OFF". Some quando a loja não informa o preço original. Use sozinho na linha' },
   { token: '{price_line}', desc: 'Preço formatado (com desconto real, ou só o preço se não houver)' },
+  { token: '{coupon_line}', desc: 'Linha "🎟️ Cupom: X" com o cupom lido do anúncio original. Some quando não há cupom. Use sozinho na linha' },
+  { token: '{pix_line}', desc: 'Linha do preço no Pix, quando for menor. Some quando não há. Use sozinho na linha' },
   { token: '{price}', desc: 'Preço atual, número puro (ex: 99.90)' },
   { token: '{original_price}', desc: 'Preço original, só se for real (senão fica vazio)' },
+  { token: '{discount}', desc: 'Só o desconto, ex: 58% OFF (vazio se não houver)' },
+  { token: '{coupon}', desc: 'Só o código do cupom (lido do anúncio ou digitado no envio)' },
   { token: '{affiliate_url}', desc: 'Seu link de afiliado do produto' },
   { token: '{store}', desc: 'Nome da loja (shopee, amazon...)' },
   { token: '{description}', desc: 'Descrição do produto' },
-  { token: '{coupon}', desc: 'Cupom (se preenchido no envio)' },
+  { token: '{coupon_url}', desc: 'Página de cupom cadastrada no produto, com seu link de afiliado' },
   { token: '{group_link}', desc: 'Link do seu grupo, configurado em Configurações' },
 ]
 
-const SAMPLE = {
-  title: 'Fone de Ouvido Bluetooth Sem Fio',
-  price_line: 'De ~R$ 149,90~ por *R$ 89,90*',
-  price: '89.90',
-  original_price: '149.90',
-  affiliate_url: 'https://exemplo.com/produto?tag=seu-id',
-  store: 'shopee',
-  description: 'Som com qualidade de estúdio, bateria de longa duração e cancelamento de ruído.',
-  coupon: 'PROMO10',
-  group_link: 'https://chat.whatsapp.com/seu-grupo',
+// A prévia usa a MESMA função que monta a mensagem de verdade. Antes ela tinha
+// uma substituição própria e divergiu: o cupom saía no grupo e não aparecia
+// aqui, e o testador não tinha como ver onde ele ia parar. O produto de exemplo
+// tem cupom e desconto justamente para mostrar onde essas linhas caem.
+const PRODUTO_DE_EXEMPLO: ProductLike = {
+  title: 'Whey Protein 1kg Whey Pro Max Titanium Sabor Morango',
+  price: 74,
+  original_price: 179.84,
+  affiliate_url: 'https://meli.la/seu-link',
+  original_url: 'https://www.mercadolivre.com.br/p/MLB123456',
+  store: 'mercado_livre',
+  description: 'Alto teor de proteínas, 15g por porção.',
+  coupon_code: 'LEVOUBARATO',
 }
 
 function renderSample(templateText: string): string {
-  return Object.entries(SAMPLE).reduce(
-    (text, [key, value]) => text.split(`{${key}}`).join(value),
-    templateText
-  )
+  if (!templateText) return ''
+  return formatMessage(PRODUTO_DE_EXEMPLO, templateText, { groupLink: 'https://chat.whatsapp.com/seu-grupo' })
 }
 
 export default function Templates() {
@@ -228,6 +236,10 @@ export default function Templates() {
                       </div>
                     ))}
                   </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Se o template não tiver <span className="font-mono text-primary">{'{coupon_line}'}</span> nem{' '}
+                    <span className="font-mono text-primary">{'{coupon}'}</span>, o cupom é colocado no fim da mensagem.
+                  </p>
                 </div>
 
                 <div>

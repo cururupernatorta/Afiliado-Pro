@@ -69,8 +69,10 @@ export default function Configuracoes() {
   const [messageTemplates, setMessageTemplates] = useState<{ id: number; name: string; template_text: string }[]>([])
 
   const [appVersion, setAppVersion] = useState('')
-  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'not-available' | 'available' | 'error'>('idle')
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'not-available' | 'available' | 'downloading' | 'downloaded' | 'error'>('idle')
   const [updateErrorMsg, setUpdateErrorMsg] = useState('')
+  // Começa LIGADA: é o padrão do app, e o valor real chega no loadConfig.
+  const [autoUpdate, setAutoUpdate] = useState(true)
 
   useEffect(() => {
     loadConfig()
@@ -81,6 +83,8 @@ export default function Configuracoes() {
     const unsubChecking = window.electronAPI.onUpdateChecking(() => setUpdateStatus('checking'))
     const unsubAvailable = window.electronAPI.onUpdateAvailable(() => setUpdateStatus('available'))
     const unsubNotAvailable = window.electronAPI.onUpdateNotAvailable(() => setUpdateStatus('not-available'))
+    const unsubProgress = window.electronAPI.onUpdateProgress(() => setUpdateStatus('downloading'))
+    const unsubDownloaded = window.electronAPI.onUpdateDownloaded(() => setUpdateStatus('downloaded'))
     const unsubError = window.electronAPI.onUpdateError((message) => {
       setUpdateErrorMsg(message)
       setUpdateStatus('error')
@@ -89,6 +93,8 @@ export default function Configuracoes() {
       unsubChecking()
       unsubAvailable()
       unsubNotAvailable()
+      unsubProgress()
+      unsubDownloaded()
       unsubError()
     }
   }, [])
@@ -96,6 +102,25 @@ export default function Configuracoes() {
   const handleCheckUpdate = () => {
     setUpdateStatus('checking')
     window.electronAPI.updateCheck()
+  }
+
+  // Salva na hora, sem depender do "Salvar" do topo: a seção de atualizações
+  // fica no fim da página, e quem desliga aqui não espera ter de subir a tela
+  // para a escolha valer.
+  const alternarAtualizacaoAutomatica = async () => {
+    const ligada = !autoUpdate
+    setAutoUpdate(ligada)
+    try {
+      await window.electronAPI.configSave({ auto_update_enabled: ligada ? 1 : 0 })
+    } catch (error) {
+      console.error('Erro ao salvar a atualização automática:', error)
+      setAutoUpdate(!ligada)
+    }
+  }
+
+  const baixarAtualizacao = () => {
+    setUpdateStatus('downloading')
+    void window.electronAPI.updateDownload()
   }
 
   const loadConfig = async () => {
@@ -136,6 +161,10 @@ export default function Configuracoes() {
           auto_scrape_interval_minutes: cfg.auto_scrape_interval_minutes || (cfg.auto_scrape_interval_hours || 6) * 60,
           group_link: cfg.group_link || '',
         })
+        // Ausente conta como LIGADA. `!!` aqui transformaria um banco sem a
+        // coluna em "desligada" — e a próxima vez que o usuário salvasse, o app
+        // pararia de se atualizar sem ele ter escolhido isso.
+        setAutoUpdate(cfg.auto_update_enabled === undefined || cfg.auto_update_enabled === null ? true : !!cfg.auto_update_enabled)
         setConfig(cfg)
       }
     } catch (error) {
@@ -880,20 +909,72 @@ export default function Configuracoes() {
               <p className="text-xs text-muted-foreground mt-1">
                 {updateStatus === 'checking' && 'Verificando se existe uma versão mais nova...'}
                 {updateStatus === 'not-available' && 'Você já está na versão mais recente.'}
-                {updateStatus === 'available' && 'Nova versão encontrada — baixando em segundo plano.'}
+                {updateStatus === 'available' &&
+                  (autoUpdate
+                    ? 'Nova versão encontrada — baixando em segundo plano.'
+                    : 'Nova versão encontrada. A atualização automática está desligada, então nada foi baixado.')}
+                {updateStatus === 'downloading' && 'Baixando a nova versão...'}
+                {updateStatus === 'downloaded' && 'Nova versão baixada. Reinicie o app para instalar.'}
                 {updateStatus === 'error' && `Erro ao verificar: ${updateErrorMsg}`}
-                {updateStatus === 'idle' && 'O app verifica automaticamente ao abrir e a cada 4 horas.'}
+                {updateStatus === 'idle' &&
+                  (autoUpdate
+                    ? 'O app verifica automaticamente ao abrir e a cada 4 horas.'
+                    : 'O app verifica ao abrir e a cada 4 horas, mas só avisa: nada é baixado sem você clicar.')}
+              </p>
+            </div>
+            {updateStatus === 'available' && !autoUpdate ? (
+              <button
+                onClick={baixarAtualizacao}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors flex-shrink-0"
+              >
+                <Download className="w-4 h-4" />
+                Baixar e instalar
+              </button>
+            ) : updateStatus === 'downloaded' ? (
+              <button
+                onClick={() => window.electronAPI.updateInstall()}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-400 transition-colors flex-shrink-0"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Reiniciar e instalar
+              </button>
+            ) : (
+              <button
+                onClick={handleCheckUpdate}
+                disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary border border-border text-sm font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50 flex-shrink-0"
+              >
+                <RefreshCw className={`w-4 h-4 ${updateStatus === 'checking' ? 'animate-spin' : ''}`} />
+                {updateStatus === 'checking' ? 'Verificando...' : 'Buscar atualizações agora'}
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-4 mt-4 pt-4 border-t border-border">
+            <div>
+              <p className="text-sm font-medium text-foreground">Atualizar automaticamente</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {autoUpdate
+                  ? 'Versão nova é baixada sozinha e instalada quando o app é fechado.'
+                  : 'Desligado: o app avisa que existe versão nova, mas só baixa e instala quando você clicar.'}
               </p>
             </div>
             <button
-              onClick={handleCheckUpdate}
-              disabled={updateStatus === 'checking'}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary border border-border text-sm font-medium hover:bg-secondary/80 transition-colors disabled:opacity-50 flex-shrink-0"
+              onClick={alternarAtualizacaoAutomatica}
+              aria-label="Atualizar automaticamente"
+              className="p-1 rounded-lg hover:bg-secondary transition-colors flex-shrink-0"
             >
-              <RefreshCw className={`w-4 h-4 ${updateStatus === 'checking' ? 'animate-spin' : ''}`} />
-              {updateStatus === 'checking' ? 'Verificando...' : 'Buscar atualizações agora'}
+              {autoUpdate ? <ToggleRight className="w-7 h-7 text-primary" /> : <ToggleLeft className="w-7 h-7 text-muted-foreground" />}
             </button>
           </div>
+          {!autoUpdate && (
+            <div className="flex items-start gap-2 mt-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+              <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-400">
+                Correções também deixam de chegar sozinhas. Se algo parar de funcionar, confira aqui se não há versão nova antes de reportar.
+              </p>
+            </div>
+          )}
           {updateStatus === 'error' && (
             <div className="flex items-start gap-2 mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
               <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />

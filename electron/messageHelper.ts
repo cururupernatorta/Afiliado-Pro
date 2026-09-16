@@ -1,29 +1,14 @@
 import { DatabaseManager } from './database'
 import { QueueManager } from './queue'
 import log from 'electron-log'
+import { formatMessage, DEFAULT_TEMPLATE_TEXT } from './messageFormat'
+import type { ProductLike } from './messageFormat'
 
-export interface ProductLike {
-  id?: number
-  title: string
-  price: number
-  original_price?: number
-  affiliate_url?: string
-  original_url: string
-  store: string
-  description?: string
-  image_path?: string
-  pix_price?: number
-  coupon_url?: string
-  /** Código de cupom lido da mensagem que originou a captura. */
-  coupon_code?: string
-}
-
-export interface FormatMessageExtra {
-  groupLink?: string
-  coupon?: string
-  /** Link de cupom já convertido em afiliado (ver ensureCouponUrl em main.ts). */
-  couponUrl?: string
-}
+// A montagem do texto mora em messageFormat.ts, que não depende do Electron:
+// o editor de templates usa a mesma função para a prévia. Reexportado daqui
+// para quem já importava deste arquivo.
+export { formatMessage, DEFAULT_TEMPLATE_TEXT, porcentagemDeDesconto } from './messageFormat'
+export type { ProductLike, FormatMessageExtra } from './messageFormat'
 
 /**
  * Decide se um produto combina com o nicho de um grupo de destino.
@@ -40,24 +25,6 @@ export function matchesGroupNiche(title: string, niche?: string | null): boolean
   if (keywords.length === 0) return true
   const lower = title.toLowerCase()
   return keywords.some((k) => lower.includes(k))
-}
-
-// Usado sempre que um grupo/envio não tem nenhum template da biblioteca associado.
-export const DEFAULT_TEMPLATE_TEXT =
-  '*{title}*\n\n💰 {price_line}\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}'
-
-// Só mostra "De X por Y" quando existe um preço original real e maior que o
-// atual. Nunca inventa um preço original (ex.: preço x 1.3) — anúncio com
-// desconto fake é o tipo de dado que o produto promete nunca fabricar.
-function buildPriceLine(price: number, originalPrice?: number): string {
-  const hasRealDiscount = typeof originalPrice === 'number' && originalPrice > price
-  // Tachado no WhatsApp é ~assim~, com UM til. Com dois (~~assim~~, que é a
-  // sintaxe do Markdown) o WhatsApp usa o primeiro e o último como
-  // delimitadores e mostra os tis restantes no meio do texto — o preço saía
-  // riscado mas com um "~" grudado de cada lado.
-  return hasRealDiscount
-    ? `De ~R$ ${originalPrice!.toFixed(2)}~ por *R$ ${price.toFixed(2)}*`
-    : `*R$ ${price.toFixed(2)}*`
 }
 
 /**
@@ -111,42 +78,6 @@ export function extrairCupomDoTexto(texto: string): string | null {
     }
   }
   return null
-}
-
-export function formatMessage(product: ProductLike, templateText: string, extra: FormatMessageExtra = {}): string {
-  const hasRealDiscount = typeof product.original_price === 'number' && product.original_price > product.price
-  // Preço no Pix só entra se for realmente menor que o normal — anunciar "no
-  // Pix" um valor igual ou maior seria enganoso.
-  const pix = typeof product.pix_price === 'number' && product.pix_price > 0 && product.pix_price < product.price
-    ? product.pix_price
-    : undefined
-
-  // O cupom do envio manual manda; na falta dele vale o que veio junto com a
-  // captura (ver extrairCupomDoTexto).
-  const cupom = extra.coupon || product.coupon_code || ''
-
-  const mensagem = templateText
-    .replace(/{title}/g, product.title)
-    .replace(/{price}/g, product.price.toFixed(2))
-    .replace(/{original_price}/g, hasRealDiscount ? product.original_price!.toFixed(2) : '')
-    .replace(/{pix_price}/g, pix ? pix.toFixed(2) : '')
-    .replace(/{pix_line}/g, pix ? `💸 *R$ ${pix.toFixed(2)}* no Pix` : '')
-    .replace(/{coupon_url}/g, extra.couponUrl || product.coupon_url || '')
-    .replace(/{price_line}/g, buildPriceLine(product.price, product.original_price))
-    .replace(/{affiliate_url}/g, product.affiliate_url || product.original_url)
-    .replace(/{original_url}/g, product.original_url)
-    .replace(/{store}/g, product.store)
-    .replace(/{description}/g, (product.description || '').substring(0, 200))
-    .replace(/{coupon}/g, cupom)
-    .replace(/{group_link}/g, extra.groupLink || '')
-
-  // Quase nenhum template tem {coupon} — o token é novo e o padrão não usa.
-  // Sem esta linha, o cupom lido da mensagem seria jogado fora em silêncio
-  // justamente no anúncio em que ele faz diferença.
-  if (cupom && !templateText.includes('{coupon}')) {
-    return mensagem + '\n\n🎟️ Cupom: *' + cupom + '*'
-  }
-  return mensagem
 }
 
 export async function autoRepostProduct(

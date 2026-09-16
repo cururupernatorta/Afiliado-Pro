@@ -104,6 +104,8 @@ export class WhatsAppManager {
   private readonly BUSCA_CANAL_PRAZO_MS = 20000
   // Leitura periodica dos canais - ver lerCanaisMonitorados.
   private leituraCanalTimer: NodeJS.Timeout | null = null
+  // Links sendo capturados neste momento — ver processDetectedUrl.
+  private capturasEmAndamento = new Set<string>()
   private lendoCanais = false
   private readonly LEITURA_CANAL_MS = 2 * 60 * 1000
   private readonly LEITURA_CANAL_QUANTIDADE = 20
@@ -1655,7 +1657,9 @@ monitorados_salvos=[${salvos}]`,
     // concorrentes anunciam ("use o cupom TECH20"), e esse texto já está aqui.
     const cupom = extrairCupomDoTexto(text) ?? undefined
 
-    await Promise.all(urls.map((url) => this.processDetectedUrl(url, false, msg.key.remoteJid ?? undefined, false, cupom)))
+    // O mesmo link repetido dentro da mesma mensagem conta uma vez só.
+    const linksUnicos = [...new Set(urls)]
+    await Promise.all(linksUnicos.map((url) => this.processDetectedUrl(url, false, msg.key.remoteJid ?? undefined, false, cupom)))
   }
 
   /**
@@ -1710,7 +1714,7 @@ monitorados_salvos=[${salvos}]`,
     const vencidas = this.dbManager.capturasVencidas(3)
     for (const item of vencidas) {
       // Ja capturado por outro caminho enquanto esperava: nao ha o que tentar.
-      if (this.dbManager.productExistsByUrl(item.url)) {
+      if (this.dbManager.productExistsByUrl(item.url) || this.dbManager.produtoPorLinkRecebido(item.url)) {
         this.dbManager.esquecerCapturaAdiada(item.url)
         continue
       }
@@ -1744,11 +1748,52 @@ monitorados_salvos=[${salvos}]`,
      */
     cupom?: string
   ): Promise<void> {
+    // O mesmo link chegava duas vezes quase juntas, e as duas capturas corriam
+    // em paralelo. Medido no log do testador: `meli.la/15EwQxy` e
+    // `meli.la/2e88ycm` processados em dupla no mesmo minuto — a página era
+    // raspada duas vezes e a fila de retentativa contava duas tentativas de
+    // uma vez. Com o Mercado Livre bloqueando o app no mesmo intervalo, cada
+    // requisição a mais pesa.
+    const chave = String(url).split('#')[0].trim()
+    if (this.capturasEmAndamento.has(chave)) {
+      log.info(`Captura deste link já em andamento, ignorando a repetição: ${url}`)
+      return
+    }
+    this.capturasEmAndamento.add(chave)
+    try {
+      await this.capturarLink(url, viaAgregador, origem, ehRetentativa, cupom)
+    } finally {
+      this.capturasEmAndamento.delete(chave)
+    }
+  }
+
+  private async capturarLink(
+    url: string,
+    viaAgregador: boolean,
+    origem: string | undefined,
+    ehRetentativa: boolean,
+    cupom: string | undefined
+  ): Promise<void> {
     // Esta oferta ja falhou ha pouco e tem hora marcada para nova tentativa.
     // Sem esta guarda, cada reentrega de lote raspava o mesmo link de novo na
     // hora e falhava igual — 6 vezes em 12 minutos no log do dono.
     if (!ehRetentativa && this.dbManager.capturaAindaEsperando(url)) {
       log.info(`Captura adiada ainda esperando, ignorando reprocessamento: ${url}`)
+      return
+    }
+
+    // Link que já levou a um produto conhecido.
+    //
+    // `meli.la/xxx` e link de agregador não carregam o código do produto, então
+    // o app só descobria que era repetido DEPOIS de raspar a página — e canal
+    // posta a mesma oferta várias vezes. Medido no log do testador: 27
+    // repetições barradas em 5 minutos, cada uma custando uma ida ao Mercado
+    // Livre, que no mesmo intervalo bloqueou o app 7 vezes. Oferta nova falhava
+    // porque as requisições estavam indo para oferta velha.
+    const jaConhecido = this.dbManager.produtoPorLinkRecebido(url)
+    if (jaConhecido?.id) {
+      this.dbManager.esquecerCapturaAdiada(url)
+      await autoRepostProduct(jaConhecido, 'whatsapp', this.dbManager, this.queueManager)
       return
     }
     const nomeDaOrigem = (): string => {
@@ -1779,6 +1824,10 @@ monitorados_salvos=[${salvos}]`,
             details: `De: ${nomeDaOrigem()} | ${url.substring(0, 70)} -> ${daLoja.substring(0, 90)}`,
           })
           await this.processDetectedUrl(daLoja, true, origem, false, cupom)
+          // Lembra também o link do agregador. Sem isto, cada repetição dele
+          // abriria de novo a janela invisível — 12 segundos por link, medido.
+          const doAgregador = this.dbManager.produtoPorLinkRecebido(daLoja) ?? this.dbManager.getProductByUrl(daLoja)
+          if (doAgregador?.id) this.dbManager.lembrarLinkRecebido(url, doAgregador.id)
           return
         }
       }
@@ -1834,6 +1883,20 @@ monitorados_salvos=[${salvos}]`,
       // — usando essa URL, o app acabava divulgando o link do concorrente em
       // vez de trocar pelo nosso.
       const urlDoProduto = scraped.original_url || url
+
+      // Link novo de um produto que já está no banco (outro `meli.la` do mesmo
+      // item). Antes seguia até o createProduct, que recusava com o aviso
+      // amarelo "Produto duplicado ignorado" e parava ali: o link não era
+      // lembrado, então a próxima repetição raspava de novo, e o produto nem
+      // era oferecido a um grupo de destino que ainda não o tinha recebido.
+      const mesmoProduto = this.dbManager.getProductByUrl(urlDoProduto)
+      if (mesmoProduto?.id) {
+        this.dbManager.lembrarLinkRecebido(url, mesmoProduto.id)
+        this.dbManager.esquecerCapturaAdiada(url)
+        await autoRepostProduct(mesmoProduto, 'whatsapp', this.dbManager, this.queueManager)
+        return
+      }
+
       const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(urlDoProduto, store)
       const product = this.dbManager.createProduct({
         ...scraped,
@@ -1854,8 +1917,10 @@ monitorados_salvos=[${salvos}]`,
         message: `Produto capturado: ${product.title}`,
         details: `De: ${nomeDaOrigem()} | URL: ${url}`,
       })
-      // Capturou: a oferta sai da fila de nova tentativa.
+      // Capturou: a oferta sai da fila de nova tentativa, e o link fica
+      // lembrado para a próxima repetição não raspar a página de novo.
       this.dbManager.esquecerCapturaAdiada(url)
+      if (product.id) this.dbManager.lembrarLinkRecebido(url, product.id)
       sendToRenderer('product:created', product)
 
       await autoRepostProduct(product, 'whatsapp', this.dbManager, this.queueManager)
