@@ -181,6 +181,28 @@ export class AffiliateManager {
   }
 
   /**
+   * ASIN em qualquer forma de URL da Amazon, inclusive quando o produto vem
+   * percent-encoded DENTRO de um parâmetro.
+   *
+   * Medido ao vivo com links reais do banco: o resolvedor de agregador devolve
+   * a tela de login com o produto embutido —
+   * `amazon.com.br/ap/signin?openid.return_to=...%2Fdp%2FB0B9C4DKKG`. Sem
+   * decodificar, o ASIN não aparece ali; o app tentaria raspar a tela de login
+   * e a captura morreria com "não consegui extrair o preço". São 90 linhas de
+   * agregador no banco do dono que dependem disto.
+   */
+  private asinDeQualquerForma(url: string): string | null {
+    const direto = this.extractAmazonAsin(url)
+    if (direto) return direto
+    try {
+      return this.extractAmazonAsin(decodeURIComponent(url))
+    } catch {
+      // URL com % solto: não dá para decodificar, e não é motivo para quebrar.
+      return null
+    }
+  }
+
+  /**
    * URL canônica do produto na Amazon: `https://<loja>/dp/<ASIN>`.
    *
    * Público porque o ScraperManager chama isto ANTES de raspar, como já faz com
@@ -198,11 +220,11 @@ export class AffiliateManager {
    */
   async resolveAmazonProductUrl(url: string): Promise<string> {
     try {
-      let asin = this.extractAmazonAsin(url)
+      let asin = this.asinDeQualquerForma(url)
       let resolvida = url
       if (!asin) {
         resolvida = await this.resolveAmazonRedirect(url)
-        asin = this.extractAmazonAsin(resolvida)
+        asin = this.asinDeQualquerForma(resolvida)
       }
       if (!asin) return url
       return `https://${new URL(resolvida).hostname}/dp/${asin}`
@@ -534,7 +556,21 @@ export class AffiliateManager {
   }
 
   detectStore(url: string): 'shopee' | 'mercado_livre' | 'amazon' | 'aliexpress' | null {
-    const lowerUrl = url.toLowerCase()
+    // Compara o DOMÍNIO, não a URL inteira.
+    //
+    // Comparando o texto todo, o link de agregador
+    // `aoferta.net/002ZGuOB-Amazon` era classificado como Amazon por causa do
+    // "-Amazon" no CAMINHO. Como já tinha loja, ele nunca chegava ao resolvedor
+    // de agregador: o app raspava a página do agregador e gravava o link dele
+    // como se fosse o produto. Cada link desses é único, então o mesmo produto
+    // virava várias linhas e saía repetido — medido no banco real, um monitor
+    // LG em 5 linhas, todas enviadas ao grupo.
+    //
+    // Sem o nome da loja no domínio o link agora cai como "loja não
+    // reconhecida", que é justamente o caminho que aciona o resolvedor de
+    // agregador — quem sabe achar o produto de verdade por trás dele.
+    const host = this.hostDaUrl(url)
+    if (!host) return null
 
     // Os encurtadores precisam estar aqui explicitamente: o nome da loja não
     // aparece no domínio deles. "meli.la/xxxx" não contém "mercadolivre", e é
@@ -542,23 +578,38 @@ export class AffiliateManager {
     // descartado como se não fosse de loja nenhuma, antes mesmo de qualquer
     // tentativa de captura. Mesmo caso de amzn.to/a.co (Amazon) e shp.ee
     // (Shopee).
-    if (lowerUrl.includes('shopee') || /(^|\/\/|\.)shp\.ee\//.test(lowerUrl)) return 'shopee'
+    if (/(^|\.)shopee\./.test(host) || /(^|\.)shp\.ee$/.test(host)) return 'shopee'
     if (
-      lowerUrl.includes('mercadolivre') ||
-      lowerUrl.includes('mercado-livre') ||
-      lowerUrl.includes('mercadolibre') ||
-      /(^|\/\/|\.)meli\.la\//.test(lowerUrl)
+      /(^|\.)mercadolivre\./.test(host) ||
+      /(^|\.)mercadolibre\./.test(host) ||
+      /(^|\.)mercado-livre\./.test(host) ||
+      /(^|\.)meli\.la$/.test(host)
     ) {
       return 'mercado_livre'
     }
     if (
-      lowerUrl.includes('amazon') ||
-      /(^|\/\/|\.)amzn\.(to|eu)\//.test(lowerUrl) ||
-      /(^|\/\/|\.)a\.co\//.test(lowerUrl)
+      /(^|\.)amazon\./.test(host) ||
+      /(^|\.)link\.amazon$/.test(host) ||
+      /(^|\.)amzn\.(to|eu)$/.test(host) ||
+      /(^|\.)a\.co$/.test(host)
     ) {
       return 'amazon'
     }
-    if (lowerUrl.includes('aliexpress')) return 'aliexpress'
+    if (/(^|\.)aliexpress\./.test(host)) return 'aliexpress'
+    return null
+  }
+
+  /** Domínio da URL em minúsculas, tolerando link colado sem `https://`. */
+  private hostDaUrl(url: string): string | null {
+    const texto = String(url || '').trim()
+    if (!texto) return null
+    for (const tentativa of [texto, 'https://' + texto]) {
+      try {
+        return new URL(tentativa).hostname.toLowerCase()
+      } catch {
+        // tenta a próxima forma
+      }
+    }
     return null
   }
 }

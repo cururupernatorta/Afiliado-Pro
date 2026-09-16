@@ -346,8 +346,12 @@ export class QueueManager {
     // === EXECUTAR ENVIO ===
     await this.sendHandler(job)
 
-    // Registrar no histórico
-    this.dbManager.recordSend(platform, groupId, productId)
+    // Registrar no histórico. Vai com nome e preço: é com eles que a barreira
+    // de anúncio repetido reconhece o mesmo produto gravado como outro produto
+    // (ver anuncioParecidoEnviado). Lê a linha agora porque o preço muda, e o
+    // que interessa depois é o que de fato saiu nesta mensagem.
+    const produtoEnviado = productId ? this.dbManager.getProductById(productId) : undefined
+    this.dbManager.recordSend(platform, groupId, productId, produtoEnviado?.title, produtoEnviado?.price)
 
     this.dbManager.addLog({
       type: 'success',
@@ -358,6 +362,34 @@ export class QueueManager {
 
     sendToRenderer('queue:update', await this.getJobs())
     return 'sent'
+  }
+
+  /**
+   * Já existe um envio deste produto para este grupo esperando na fila?
+   *
+   * O histórico de envio só é gravado DEPOIS que a mensagem sai, então ele não
+   * enxerga o que ainda está na fila — e a fila segura envio por minutos
+   * (delay entre grupos, cooldown do modo stealth, espera por reconexão). Duas
+   * capturas do mesmo produto dentro dessa janela passavam as duas pela
+   * barreira de anúncio repetido, porque para ela nada tinha sido enviado
+   * ainda.
+   *
+   * Esta checagem NÃO entra no `addJob`: o modo stealth reagenda um envio
+   * adiado chamando `addJob` com o job ainda ativo, e a checagem ali dentro
+   * cancelaria o reagendamento — a oferta sumiria em silêncio.
+   *
+   * Só cobre a fila em memória, que é a que o app usa na prática; com Redis
+   * devolve false em vez de mentir.
+   */
+  temEnvioPendente(platform: string, groupId: string, productId: number): boolean {
+    if (this.useRedis) return false
+    return this.memoryQueue.some(
+      (j) =>
+        (j.status === 'waiting' || j.status === 'active') &&
+        j.data.platform === platform &&
+        j.data.groupId === groupId &&
+        j.data.productId === productId
+    )
   }
 
   async addJob(data: SendJob, delayMs: number = 0): Promise<any> {

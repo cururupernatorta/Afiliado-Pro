@@ -18,6 +18,8 @@ export interface Product {
   pix_price?: number
   /** Página de cupom da loja; vira link de afiliado na hora do envio. */
   coupon_url?: string
+  /** Código de cupom lido da mensagem que originou a captura. */
+  coupon_code?: string
   store: 'shopee' | 'mercado_livre' | 'amazon' | 'aliexpress'
   source: 'manual' | 'whatsapp' | 'telegram' | 'busca'
   created_at?: string
@@ -183,6 +185,19 @@ export function urlParaGuardar(url: string): string {
   const base = urlBaseDoProduto(url)
   if (chaveDeLojaDoProduto(url) && !chaveDeLojaDoProduto(base)) return String(url)
   return base
+}
+
+/**
+ * Nome do produto reduzido ao que da para comparar: minusculas, sem acento e
+ * sem pontuacao. Usado por `anuncioParecidoEnviado`.
+ */
+export function normalizarTitulo(titulo: string): string {
+  return String(titulo || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
 }
 
 export class DatabaseManager extends EventEmitter {
@@ -388,6 +403,36 @@ export class DatabaseManager extends EventEmitter {
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_products_recorrencia ON products(recorrencia_horas)')
     } catch (err) {
       log.error('Falha na migração das colunas de recorrência:', err)
+    }
+
+    // Migração: cupom lido da mensagem, e nome/preço no histórico de envio.
+    //
+    // Estas colunas entram SÓ aqui, e não no CREATE TABLE acima. Foi exatamente
+    // o contrário que derrubou a 1.9.2 na máquina dos dois testadores: o bloco
+    // de criação citava uma coluna que só passava a existir na migração, e o
+    // app nem abria. Migração sozinha resolve os dois casos, banco novo e
+    // banco antigo.
+    try {
+      const prod = this.db.prepare('PRAGMA table_info(products)').all() as Array<{ name: string }>
+      if (!prod.some((c) => c.name === 'coupon_code')) {
+        this.db.exec('ALTER TABLE products ADD COLUMN coupon_code TEXT')
+        log.info('Migração: coluna coupon_code adicionada à tabela products')
+      }
+
+      // O histórico guardava só o id do produto. O id não reconhece o mesmo
+      // item gravado como outro produto — que é o caso de dois grupos
+      // postando o mesmo aparelho por anúncios diferentes. Guardando o que de
+      // fato saiu (nome e preço), a comparação passa a ser possível sem
+      // depender da linha do produto, que pode mudar de preço ou ser apagada.
+      const hist = this.db.prepare('PRAGMA table_info(send_history)').all() as Array<{ name: string }>
+      if (!hist.some((c) => c.name === 'title')) {
+        this.db.exec('ALTER TABLE send_history ADD COLUMN title TEXT')
+      }
+      if (!hist.some((c) => c.name === 'price')) {
+        this.db.exec('ALTER TABLE send_history ADD COLUMN price REAL')
+      }
+    } catch (err) {
+      log.error('Falha na migração de cupom/histórico de envio:', err)
     }
 
     // Migração: adiciona aliexpress_tracking_id em bancos já existentes
@@ -733,6 +778,59 @@ export class DatabaseManager extends EventEmitter {
     return !!row
   }
 
+  /**
+   * Este grupo já recebeu este MESMO anúncio há pouco, ainda que gravado como
+   * outro produto?
+   *
+   * Existe porque o identificador da loja não resolve tudo. Dois grupos
+   * monitorados postam o mesmo aparelho por anúncios diferentes — ASIN
+   * diferente, MLB diferente —, e para a loja são produtos distintos mesmo.
+   * Medido no banco real: depois de juntar tudo que o identificador junta,
+   * sobraram 7 casos assim, todos enviados duas vezes ao mesmo grupo.
+   *
+   * Compara pelo NOME, nunca pelo preço: dos 54 casos de nome repetido, 22
+   * tinham preço diferente, porque é o mesmo produto capturado em momentos
+   * diferentes (a mesma placa-mãe a R$ 659,90 e a R$ 679,15). Exigir preço
+   * igual deixaria todos passarem.
+   *
+   * A queda de preço é a exceção, e é o ponto todo: se o item está bem mais
+   * barato do que da última vez, isso é oferta nova e merece sair. Foi por isso
+   * que a trava não virou "nunca repetir o mesmo nome".
+   *
+   * Devolve o envio anterior quando deve segurar, ou `null` quando pode sair.
+   */
+  anuncioParecidoEnviado(
+    platform: string,
+    groupId: string,
+    title: string,
+    price: number,
+    dias = 7,
+    quedaQueLiberaNovoAnuncio = 0.1
+  ): { title: string; price: number; sent_at: string } | null {
+    const nome = normalizarTitulo(title)
+    if (!nome) return null
+
+    const anteriores = this.db
+      .prepare(`
+        SELECT title, price, sent_at FROM send_history
+        WHERE platform = ? AND group_id = ? AND title IS NOT NULL
+          AND sent_at >= datetime('now', ?)
+        ORDER BY sent_at DESC
+        LIMIT 300
+      `)
+      .all(platform, groupId, '-' + Math.max(1, Math.round(dias)) + ' days') as Array<{ title: string; price: number; sent_at: string }>
+
+    for (const anterior of anteriores) {
+      if (normalizarTitulo(anterior.title) !== nome) continue
+      const precoAntes = Number(anterior.price)
+      if (Number.isFinite(precoAntes) && precoAntes > 0 && price <= precoAntes * (1 - quedaQueLiberaNovoAnuncio)) {
+        return null
+      }
+      return { title: anterior.title, price: precoAntes, sent_at: anterior.sent_at }
+    }
+    return null
+  }
+
   getDashboardStats(): {
     produtos: number
     enviosHoje: number
@@ -774,8 +872,8 @@ export class DatabaseManager extends EventEmitter {
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO products (title, price, original_price, image_url, image_path, description, original_url, affiliate_url, pix_price, coupon_url, store, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO products (title, price, original_price, image_url, image_path, description, original_url, affiliate_url, pix_price, coupon_url, coupon_code, store, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const result = stmt.run(
       product.title,
@@ -792,6 +890,7 @@ export class DatabaseManager extends EventEmitter {
       product.affiliate_url ?? null,
       product.pix_price ?? null,
       product.coupon_url ?? null,
+      product.coupon_code ?? null,
       product.store,
       product.source
     )
@@ -1192,8 +1291,16 @@ export class DatabaseManager extends EventEmitter {
   }
 
   // Send History (para stealth mode)
-  recordSend(platform: string, groupId: string, productId?: number): void {
-    this.db.prepare('INSERT INTO send_history (platform, group_id, product_id) VALUES (?, ?, ?)').run(platform, groupId, productId ?? null)
+  //
+  // `title` e `price` são o que de fato saiu, não o que o produto tem hoje: é
+  // com eles que `anuncioParecidoEnviado` decide se o grupo já recebeu este
+  // anúncio. Ficam opcionais porque linhas gravadas antes desta versão não os
+  // têm — e sem eles a comparação simplesmente não acontece, em vez de barrar
+  // envio por engano.
+  recordSend(platform: string, groupId: string, productId?: number, title?: string, price?: number): void {
+    this.db
+      .prepare('INSERT INTO send_history (platform, group_id, product_id, title, price) VALUES (?, ?, ?, ?, ?)')
+      .run(platform, groupId, productId ?? null, title ?? null, typeof price === 'number' ? price : null)
   }
 
   getHourlySendCount(platform: string): number {

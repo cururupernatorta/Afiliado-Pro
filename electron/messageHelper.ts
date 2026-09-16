@@ -14,6 +14,8 @@ export interface ProductLike {
   image_path?: string
   pix_price?: number
   coupon_url?: string
+  /** Código de cupom lido da mensagem que originou a captura. */
+  coupon_code?: string
 }
 
 export interface FormatMessageExtra {
@@ -58,6 +60,59 @@ function buildPriceLine(price: number, originalPrice?: number): string {
     : `*R$ ${price.toFixed(2)}*`
 }
 
+/**
+ * Palavras que costumam vir logo depois de "cupom" e NÃO são o código.
+ *
+ * Sem esta lista, "cupom de desconto na página" virava o cupom "DESCONTO", e o
+ * anúncio sairia mandando o cliente digitar uma palavra que não existe.
+ */
+const PALAVRAS_QUE_NAO_SAO_CUPOM = new Set([
+  'DE', 'DO', 'DA', 'NO', 'NA', 'EM', 'COM', 'PARA', 'POR', 'ATE', 'MAIS', 'AQUI', 'LINK', 'ABAIXO',
+  'ACIMA', 'DENTRO', 'DESCONTO', 'DESCONTOS', 'EXCLUSIVO', 'EXCLUSIVA', 'PROMOCAO', 'PRIMEIRA',
+  'COMPRA', 'VALIDO', 'LIMITADO', 'PAGINA', 'PRODUTO', 'LOJA', 'APENAS', 'GRATIS', 'FRETE', 'HOJE',
+  'SIM', 'NAO', 'DISPONIVEL', 'APLICADO', 'APLICAR', 'SELECIONE', 'CLIQUE', 'OFERTA', 'RESGATE',
+  'EXTRA', 'SOME', 'TODOS', 'ESSE', 'ESTE', 'SEU', 'SUA', 'USE', 'USAR', 'VAI', 'CAI',
+])
+
+/**
+ * Procura um código de cupom no texto da mensagem capturada.
+ *
+ * Os canais concorrentes escrevem o cupom no próprio anúncio ("use o cupom
+ * TECH20"), e esse texto é o mesmo de onde o app já tira a URL — então o cupom
+ * está à mão, sem depender de API de loja nenhuma.
+ *
+ * Conservador de propósito: um cupom inventado é pior que nenhum, porque o
+ * cliente tenta, não funciona, e a culpa fica no anúncio. Só aceita o que tem
+ * cara de código (maiúsculas ou com número), rejeita palavra comum e desiste
+ * assim que o texto deixa de parecer código.
+ */
+export function extrairCupomDoTexto(texto: string): string | null {
+  const t = String(texto || '')
+  const marcador = /cupom|cupon|coupon/gi
+  let achado: RegExpExecArray | null
+  while ((achado = marcador.exec(t))) {
+    const depois = t.slice(achado.index + achado[0].length, achado.index + achado[0].length + 60)
+    const tokens = depois.split(/[\s:;,|>\-–—]+/).filter(Boolean).slice(0, 4)
+    for (const bruto of tokens) {
+      // Tira emoji e pontuação grudada ("👉TECH15", "PROMO10!").
+      const token = bruto.replace(/[^\p{L}\p{N}._-]/gu, '')
+      if (!token) continue
+      const alto = token.toUpperCase()
+      if (PALAVRAS_QUE_NAO_SAO_CUPOM.has(alto)) continue
+      // Deixou de parecer código: para nesta ocorrência em vez de sair catando
+      // palavra solta no meio da frase.
+      if (!/^[A-Z0-9][A-Z0-9._-]{2,19}$/.test(alto)) break
+      // Só número é valor ("cupom de 20"), não código.
+      if (!/[A-Z]/.test(alto)) break
+      // Texto em minúsculas no meio da frase quase nunca é cupom; com número
+      // ("promo10") é.
+      if (token !== alto && !/\d/.test(token)) break
+      return alto
+    }
+  }
+  return null
+}
+
 export function formatMessage(product: ProductLike, templateText: string, extra: FormatMessageExtra = {}): string {
   const hasRealDiscount = typeof product.original_price === 'number' && product.original_price > product.price
   // Preço no Pix só entra se for realmente menor que o normal — anunciar "no
@@ -66,7 +121,11 @@ export function formatMessage(product: ProductLike, templateText: string, extra:
     ? product.pix_price
     : undefined
 
-  return templateText
+  // O cupom do envio manual manda; na falta dele vale o que veio junto com a
+  // captura (ver extrairCupomDoTexto).
+  const cupom = extra.coupon || product.coupon_code || ''
+
+  const mensagem = templateText
     .replace(/{title}/g, product.title)
     .replace(/{price}/g, product.price.toFixed(2))
     .replace(/{original_price}/g, hasRealDiscount ? product.original_price!.toFixed(2) : '')
@@ -78,8 +137,16 @@ export function formatMessage(product: ProductLike, templateText: string, extra:
     .replace(/{original_url}/g, product.original_url)
     .replace(/{store}/g, product.store)
     .replace(/{description}/g, (product.description || '').substring(0, 200))
-    .replace(/{coupon}/g, extra.coupon || '')
+    .replace(/{coupon}/g, cupom)
     .replace(/{group_link}/g, extra.groupLink || '')
+
+  // Quase nenhum template tem {coupon} — o token é novo e o padrão não usa.
+  // Sem esta linha, o cupom lido da mensagem seria jogado fora em silêncio
+  // justamente no anúncio em que ele faz diferença.
+  if (cupom && !templateText.includes('{coupon}')) {
+    return mensagem + '\n\n🎟️ Cupom: *' + cupom + '*'
+  }
+  return mensagem
 }
 
 export async function autoRepostProduct(
@@ -123,9 +190,35 @@ export async function autoRepostProduct(
       // Barreira contra anúncio repetido. Só vale para o repost automático —
       // o envio manual continua livre, porque ali a repetição é escolha do
       // usuário, não acidente.
-      if (!opcoes?.ignorarRepetido && product.id && dbManager.produtoJaEnviadoAoGrupo(sourcePlatform, target.group_id, product.id)) {
-        jaEnviados++
-        continue
+      if (!opcoes?.ignorarRepetido && product.id) {
+        if (dbManager.produtoJaEnviadoAoGrupo(sourcePlatform, target.group_id, product.id)) {
+          jaEnviados++
+          continue
+        }
+
+        // Mesmo produto já esperando na fila para este grupo. O histórico só é
+        // gravado depois que a mensagem sai, então ele não enxerga isto.
+        if (queueManager.temEnvioPendente(sourcePlatform, target.group_id, product.id)) {
+          jaEnviados++
+          continue
+        }
+
+        // Produto diferente no banco, mesmo anúncio na prática: outro grupo
+        // monitorado postou o mesmo aparelho por um anúncio que a loja trata
+        // como outro produto.
+        const parecido = dbManager.anuncioParecidoEnviado(sourcePlatform, target.group_id, product.title, product.price)
+        if (parecido) {
+          jaEnviados++
+          dbManager.addLog({
+            type: 'info',
+            platform: sourcePlatform,
+            message: `Anúncio repetido evitado: ${product.title}`,
+            details:
+              `Este grupo já recebeu o mesmo produto em ${parecido.sent_at} por R$ ${Number(parecido.price).toFixed(2)}. ` +
+              `Agora está R$ ${product.price.toFixed(2)} — só sai de novo se o preço cair mais de 10%.`,
+          })
+          continue
+        }
       }
 
       const template = dbManager.getAdTemplate(sourcePlatform, target.group_id)

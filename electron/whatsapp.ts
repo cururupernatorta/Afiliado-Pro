@@ -8,7 +8,7 @@ import { DatabaseManager } from './database'
 import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
 import { sendToRenderer, ErroDeConexao } from './utils'
-import { autoRepostProduct } from './messageHelper'
+import { autoRepostProduct, extrairCupomDoTexto } from './messageHelper'
 import { bufferMessages, messageTimestampMs, selectRecoverableMessages, trimProcessedIds } from './historyRecovery'
 
 export class WhatsAppManager {
@@ -1651,7 +1651,11 @@ monitorados_salvos=[${salvos}]`,
     // processado quase junto) tem vários links, o segundo não precisa esperar
     // o raspador+repost do primeiro terminar pra começar — cada raspagem
     // já é uma operação de rede independente.
-    await Promise.all(urls.map((url) => this.processDetectedUrl(url, false, msg.key.remoteJid ?? undefined)))
+    // O cupom sai do MESMO texto de onde veio o link: é assim que os canais
+    // concorrentes anunciam ("use o cupom TECH20"), e esse texto já está aqui.
+    const cupom = extrairCupomDoTexto(text) ?? undefined
+
+    await Promise.all(urls.map((url) => this.processDetectedUrl(url, false, msg.key.remoteJid ?? undefined, false, cupom)))
   }
 
   /**
@@ -1729,7 +1733,17 @@ monitorados_salvos=[${salvos}]`,
    * varios grupos e canais monitorados ao mesmo tempo, atribuir "no olho" pelo
    * horario e chute.
    */
-  private async processDetectedUrl(url: string, viaAgregador = false, origem?: string, ehRetentativa = false): Promise<void> {
+  private async processDetectedUrl(
+    url: string,
+    viaAgregador = false,
+    origem?: string,
+    ehRetentativa = false,
+    /**
+     * Cupom escrito na mesma mensagem que trouxe o link. Vem vazio numa nova
+     * tentativa: a fila de retentativa guarda a URL, não o texto do anúncio.
+     */
+    cupom?: string
+  ): Promise<void> {
     // Esta oferta ja falhou ha pouco e tem hora marcada para nova tentativa.
     // Sem esta guarda, cada reentrega de lote raspava o mesmo link de novo na
     // hora e falhava igual — 6 vezes em 12 minutos no log do dono.
@@ -1764,7 +1778,7 @@ monitorados_salvos=[${salvos}]`,
             message: 'Link de agregador resolvido para a loja',
             details: `De: ${nomeDaOrigem()} | ${url.substring(0, 70)} -> ${daLoja.substring(0, 90)}`,
           })
-          await this.processDetectedUrl(daLoja, true, origem)
+          await this.processDetectedUrl(daLoja, true, origem, false, cupom)
           return
         }
       }
@@ -1825,6 +1839,8 @@ monitorados_salvos=[${salvos}]`,
         ...scraped,
         source: 'whatsapp',
         affiliate_url: affiliateUrl || undefined,
+        // O cupom que o canal escreveu no próprio anúncio segue com o produto.
+        coupon_code: cupom,
       } as any)
 
       if (!product) {
