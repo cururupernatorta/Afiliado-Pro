@@ -35,7 +35,7 @@ export interface FormatMessageExtra {
 // Usado sempre que um grupo/envio não tem nenhum template da biblioteca associado.
 //
 // {discount_line} e {coupon_line} somem com a linha inteira quando não há dado
-// (ver LINHA_SOZINHA), então estar no padrão não deixa buraco no anúncio de
+// (ver VARIAVEL), então estar no padrão não deixa buraco no anúncio de
 // produto sem desconto ou sem cupom.
 export const DEFAULT_TEMPLATE_TEXT =
   '*{title}*\n\n{discount_line}\n💰 {price_line}\n\n{coupon_line}\n\n📝 {description}\n\n🔗 {affiliate_url}\n\n⚡ Corra antes que acabe!\n\n👥 Entre no nosso grupo de ofertas: {group_link}'
@@ -68,17 +68,18 @@ export function porcentagemDeDesconto(price: number, originalPrice?: number): nu
 }
 
 /**
- * Tokens que ocupam uma linha inteira e, sem dado, SOMEM com a linha.
+ * Uma linha em que TODAS as variáveis ficam vazias some inteira, com o texto
+ * fixo que estiver nela.
  *
- * Substituir por vazio deixava buraco no anúncio: o preço, duas linhas em
- * branco, a descrição. Só some a linha em que o token está sozinho — se o
- * usuário escreveu texto junto dele, o texto fica.
+ * A primeira versão só apagava a linha quando o token estava sozinho nela. Só
+ * que quem monta template escreve "🎟️ Cupom: {coupon}", e aí, em produto sem
+ * cupom, o anúncio saía com o emoji e "Cupom:" pendurados em branco — relato
+ * do testador. A regra agora olha a linha inteira: sobrou alguma variável com
+ * valor, a linha fica ("💰 {price_line} {discount}" continua mostrando o
+ * preço); não sobrou nenhuma, a linha sai. Linha sem variável nenhuma, como
+ * "⚡ Corra antes que acabe!", nunca é tocada.
  */
-const LINHA_SOZINHA = {
-  '{pix_line}': /^[ \t]*\{pix_line\}[ \t]*(?:\r?\n|$)/gm,
-  '{coupon_line}': /^[ \t]*\{coupon_line\}[ \t]*(?:\r?\n|$)/gm,
-  '{discount_line}': /^[ \t]*\{discount_line\}[ \t]*(?:\r?\n|$)/gm,
-} as const
+const VARIAVEL = /\{[a-z_]+\}/g
 
 export function formatMessage(product: ProductLike, templateText: string, extra: FormatMessageExtra = {}): string {
   const hasRealDiscount = typeof product.original_price === 'number' && product.original_price > product.price
@@ -93,52 +94,51 @@ export function formatMessage(product: ProductLike, templateText: string, extra:
   const cupom = extra.coupon || product.coupon_code || ''
   const desconto = porcentagemDeDesconto(product.price, product.original_price)
 
-  const linhas: Record<keyof typeof LINHA_SOZINHA, string> = {
+  const valores: Record<string, string> = {
+    '{title}': product.title,
+    '{price}': product.price.toFixed(2),
+    '{original_price}': hasRealDiscount ? product.original_price!.toFixed(2) : '',
+    '{pix_price}': pix ? pix.toFixed(2) : '',
     '{pix_line}': pix ? `💸 *R$ ${pix.toFixed(2)}* no Pix` : '',
     '{coupon_line}': cupom ? `🎟️ Cupom: *${cupom}*` : '',
     '{discount_line}': desconto ? `🔥 *${desconto}% OFF*` : '',
+    '{discount}': desconto ? `${desconto}% OFF` : '',
+    '{coupon_url}': extra.couponUrl || product.coupon_url || '',
+    '{price_line}': buildPriceLine(product.price, product.original_price),
+    '{affiliate_url}': product.affiliate_url || product.original_url,
+    '{original_url}': product.original_url,
+    '{store}': product.store,
+    '{description}': (product.description || '').substring(0, 200),
+    '{coupon}': cupom,
+    '{group_link}': extra.groupLink || '',
   }
 
-  let texto = templateText
   let tirouLinha = false
-  for (const token of Object.keys(LINHA_SOZINHA) as Array<keyof typeof LINHA_SOZINHA>) {
-    if (linhas[token]) continue
-    const antes = texto
-    texto = texto.replace(LINHA_SOZINHA[token], '')
-    if (texto !== antes) tirouLinha = true
+  const linhas: string[] = []
+  for (const linha of templateText.split(/\r?\n/)) {
+    const variaveis = (linha.match(VARIAVEL) ?? []).filter((v) => v in valores)
+    if (variaveis.length > 0 && variaveis.every((v) => valores[v] === '')) {
+      tirouLinha = true
+      continue
+    }
+    // Substituição por função, e não por string: numa string de substituição
+    // o JavaScript interpreta `$&`, `$1` e companhia, e um título ou descrição
+    // com esses caracteres sairia corrompido no anúncio. Variável desconhecida
+    // fica como está, igual antes.
+    linhas.push(linha.replace(VARIAVEL, (v) => (v in valores ? valores[v] : v)))
   }
 
-  // Substituição por função, e não por string: numa string de substituição o
-  // JavaScript interpreta `$&`, `$1` e companhia, e um título ou descrição com
-  // esses caracteres sairia corrompido no anúncio.
-  let mensagem = texto
-    .replace(/{title}/g, () => product.title)
-    .replace(/{price}/g, () => product.price.toFixed(2))
-    .replace(/{original_price}/g, () => (hasRealDiscount ? product.original_price!.toFixed(2) : ''))
-    .replace(/{pix_price}/g, () => (pix ? pix.toFixed(2) : ''))
-    .replace(/{pix_line}/g, () => linhas['{pix_line}'])
-    .replace(/{coupon_line}/g, () => linhas['{coupon_line}'])
-    .replace(/{discount_line}/g, () => linhas['{discount_line}'])
-    .replace(/{discount}/g, () => (desconto ? `${desconto}% OFF` : ''))
-    .replace(/{coupon_url}/g, () => extra.couponUrl || product.coupon_url || '')
-    .replace(/{price_line}/g, () => buildPriceLine(product.price, product.original_price))
-    .replace(/{affiliate_url}/g, () => product.affiliate_url || product.original_url)
-    .replace(/{original_url}/g, () => product.original_url)
-    .replace(/{store}/g, () => product.store)
-    .replace(/{description}/g, () => (product.description || '').substring(0, 200))
-    .replace(/{coupon}/g, () => cupom)
-    .replace(/{group_link}/g, () => extra.groupLink || '')
-
+  let mensagem = linhas.join('\n')
   if (tirouLinha) {
     // A linha sumiu, mas as linhas em branco em volta dela ficavam dobradas.
-    mensagem = mensagem.replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '')
+    mensagem = mensagem.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').replace(/\n+$/, '')
   }
 
   // Template que não diz onde vai o cupom recebe a linha no fim. Sem isto, o
   // cupom lido do anúncio seria jogado fora em silêncio justamente no anúncio
   // em que ele faz diferença. Para escolher o lugar, basta usar {coupon_line}.
   if (cupom && !templateText.includes('{coupon}') && !templateText.includes('{coupon_line}')) {
-    return mensagem + '\n\n' + linhas['{coupon_line}']
+    return mensagem + '\n\n' + valores['{coupon_line}']
   }
   return mensagem
 }

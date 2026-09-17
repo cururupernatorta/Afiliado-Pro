@@ -14,10 +14,10 @@ interface MessageTemplate {
 
 const PLACEHOLDERS = [
   { token: '{title}', desc: 'Nome do produto' },
-  { token: '{discount_line}', desc: 'Linha "🔥 58% OFF". Some quando a loja não informa o preço original. Use sozinho na linha' },
+  { token: '{discount_line}', desc: 'Linha "🔥 58% OFF", quando a loja informa o preço original' },
   { token: '{price_line}', desc: 'Preço formatado (com desconto real, ou só o preço se não houver)' },
-  { token: '{coupon_line}', desc: 'Linha "🎟️ Cupom: X" com o cupom lido do anúncio original. Some quando não há cupom. Use sozinho na linha' },
-  { token: '{pix_line}', desc: 'Linha do preço no Pix, quando for menor. Some quando não há. Use sozinho na linha' },
+  { token: '{coupon_line}', desc: 'Linha "🎟️ Cupom: X" com o cupom lido do anúncio original' },
+  { token: '{pix_line}', desc: 'Linha do preço no Pix, quando for menor' },
   { token: '{price}', desc: 'Preço atual, número puro (ex: 99.90)' },
   { token: '{original_price}', desc: 'Preço original, só se for real (senão fica vazio)' },
   { token: '{discount}', desc: 'Só o desconto, ex: 58% OFF (vazio se não houver)' },
@@ -44,9 +44,15 @@ const PRODUTO_DE_EXEMPLO: ProductLike = {
   coupon_code: 'LEVOUBARATO',
 }
 
-function renderSample(templateText: string): string {
+// O mesmo produto sem cupom e sem desconto: é o caso em que as linhas somem, e
+// foi nele que apareceu o "🎟️ Cupom:" em branco relatado pelo testador.
+const PRODUTO_SEM_CUPOM: ProductLike = { ...PRODUTO_DE_EXEMPLO, coupon_code: undefined, original_price: undefined }
+
+function renderSample(templateText: string, semCupom: boolean): string {
   if (!templateText) return ''
-  return formatMessage(PRODUTO_DE_EXEMPLO, templateText, { groupLink: 'https://chat.whatsapp.com/seu-grupo' })
+  return formatMessage(semCupom ? PRODUTO_SEM_CUPOM : PRODUTO_DE_EXEMPLO, templateText, {
+    groupLink: 'https://chat.whatsapp.com/seu-grupo',
+  })
 }
 
 export default function Templates() {
@@ -57,6 +63,7 @@ export default function Templates() {
   const [name, setName] = useState('')
   const [text, setText] = useState('')
   const [saving, setSaving] = useState(false)
+  const [previaSemCupom, setPreviaSemCupom] = useState(false)
 
   useEffect(() => {
     loadTemplates()
@@ -237,15 +244,30 @@ export default function Templates() {
                     ))}
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
+                    Uma linha em que todas as variáveis ficam vazias some da mensagem, com o texto que estiver nela. Ex.:{' '}
+                    <span className="font-mono text-primary">{'🎟️ Cupom: {coupon}'}</span> não aparece em produto sem cupom.
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
                     Se o template não tiver <span className="font-mono text-primary">{'{coupon_line}'}</span> nem{' '}
                     <span className="font-mono text-primary">{'{coupon}'}</span>, o cupom é colocado no fim da mensagem.
                   </p>
                 </div>
 
                 <div>
-                  <p className="text-xs font-medium text-foreground mb-2">Preview com dados de exemplo</p>
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <p className="text-xs font-medium text-foreground">Preview com dados de exemplo</p>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={previaSemCupom}
+                        onChange={(e) => setPreviaSemCupom(e.target.checked)}
+                        className="accent-primary"
+                      />
+                      Ver produto sem cupom e sem desconto
+                    </label>
+                  </div>
                   <div className="p-3 rounded-lg bg-secondary/60 border border-border text-sm text-foreground whitespace-pre-wrap font-mono">
-                    {renderSample(text) || 'Digite o texto acima para ver o preview'}
+                    {renderSample(text, previaSemCupom) || 'Digite o texto acima para ver o preview'}
                   </div>
                 </div>
 
