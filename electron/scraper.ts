@@ -757,6 +757,18 @@ export class ScraperManager {
       const matched = readyPattern.test(html)
       const extracted = this.extractAliExpressFields($, html)
       trail.push(`headless: sinal de "pronto" encontrado=${matched}, preço extraído=${extracted.price}, ${html.length} bytes`)
+      if (extracted.price === 0) {
+        // Registra QUE página veio. Nos logs do testador as falhas devolveram
+        // ~127 KB em produtos diferentes, enquanto uma página de produto tem
+        // 300 KB ou mais — tudo indica a tela anti-robô do AliExpress, mas o
+        // log só guardava o tamanho, e não dava para ter certeza. Aberta daqui,
+        // a mesma URL carregou com preço. Com título e texto no log, o próximo
+        // relato responde a pergunta em vez de deixar para deduzir.
+        $('script, style, noscript').remove()
+        const titulo = $('title').first().text().replace(/\s+/g, ' ').trim().slice(0, 70)
+        const visivel = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 160)
+        trail.push(`página devolvida: título="${titulo || '(vazio)'}", texto="${visivel || '(vazio)'}"`)
+      }
       if (extracted.price > 0) {
         title = extracted.title || title
         price = extracted.price

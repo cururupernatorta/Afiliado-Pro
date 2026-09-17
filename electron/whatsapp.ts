@@ -1876,6 +1876,16 @@ monitorados_salvos=[${salvos}]`,
         return
       }
 
+      // AliExpress sem credencial não vira comissão — ver
+      // pularAliExpressSemCredencial. Sai também da fila de retentativa: o app
+      // do testador chegou a ter 110 ofertas esperando, e as do AliExpress
+      // reabriam a página de 5 em 5 minutos sem nunca poder dar comissão.
+      if (store === 'aliexpress' && this.scraperManager.affiliateManager?.pularAliExpressSemCredencial()) {
+        this.dbManager.esquecerCapturaAdiada(url)
+        log.info(`AliExpress sem credenciais, captura ignorada: ${url}`)
+        return
+      }
+
       const scraped = await this.scraperManager.scrapeProduct(url)
       // Gera o link a partir da URL que a captura resolveu, não da que veio no
       // grupo. O que circula em grupo costuma ser o link de afiliado de OUTRA

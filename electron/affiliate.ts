@@ -321,6 +321,45 @@ export class AffiliateManager {
     this.aliexpressBloqueadoAte = 0
   }
 
+  /** As três credenciais que o link de afiliado do AliExpress exige estão preenchidas? */
+  aliexpressConfigurado(): boolean {
+    const c = this.dbManager.getConfig() as any
+    return !!(c?.aliexpress_app_key && c?.aliexpress_app_secret && c?.aliexpress_tracking_id)
+  }
+
+  private ultimoAvisoAliExpressSemCredencial = 0
+
+  /**
+   * A captura deste link do AliExpress deve ser pulada por falta de credencial?
+   *
+   * Sem App Key, App Secret e Tracking ID, `convertAliExpress` devolve null e o
+   * anúncio sai com o link comum do produto: nenhuma comissão para o usuário.
+   * Medido no banco do dono, que não tem as credenciais: 2 capturas e 11
+   * falhas do AliExpress — cada falha abrindo a página num navegador invisível
+   * por até 25 s, e cada acerto virando propaganda de graça para a loja. Pular
+   * a captura corta as duas coisas.
+   *
+   * O aviso sai no máximo uma vez a cada 6 horas, compartilhado entre WhatsApp e
+   * Telegram: um canal de ofertas manda dezenas de links do AliExpress por hora,
+   * e uma linha por link enterraria o resto do log.
+   */
+  pularAliExpressSemCredencial(): boolean {
+    if (this.aliexpressConfigurado()) return false
+    const agora = Date.now()
+    if (agora - this.ultimoAvisoAliExpressSemCredencial > 6 * 60 * 60 * 1000) {
+      this.ultimoAvisoAliExpressSemCredencial = agora
+      this.dbManager.addLog({
+        type: 'warning',
+        platform: 'system',
+        message: 'Ofertas do AliExpress não estão sendo anunciadas: faltam as credenciais',
+        details:
+          'Sem App Key, App Secret e Tracking ID, o link do AliExpress não leva o seu código de afiliado — o anúncio sairia sem comissão para você. ' +
+          'Preencha as três em Configurações para voltar a anunciar produtos do AliExpress.',
+      })
+    }
+    return true
+  }
+
   private aliexpressEstaBloqueado(): boolean {
     return Date.now() < this.aliexpressBloqueadoAte
   }

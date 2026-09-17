@@ -287,6 +287,13 @@ export class TelegramManager {
         return
       }
 
+      // AliExpress sem credencial não vira comissão — ver
+      // pularAliExpressSemCredencial em affiliate.ts.
+      if (store === 'aliexpress' && this.scraperManager.affiliateManager?.pularAliExpressSemCredencial()) {
+        log.info(`AliExpress sem credenciais, captura ignorada: ${url}`)
+        return
+      }
+
       const scraped = await this.scraperManager.scrapeProduct(url)
       // Ver o comentário equivalente em whatsapp.ts: usa a URL que a captura
       // resolveu, não a que veio no grupo — que costuma ser o link de afiliado
