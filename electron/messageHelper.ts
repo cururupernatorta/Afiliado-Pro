@@ -97,6 +97,22 @@ export async function autoRepostProduct(
     const config = dbManager.getConfig()
     if (!config.auto_repost_enabled) return
 
+    // Última barreira contra anúncio sem comissão. A captura já recusa produto
+    // sem link de afiliado, mas produtos gravados antes desta versão ficaram no
+    // banco sem link — e a mensagem cai no `affiliate_url || original_url`, que
+    // publicaria o link cru da loja.
+    if (!product.affiliate_url) {
+      dbManager.addLog({
+        type: 'warning',
+        platform: sourcePlatform,
+        message: `Não anunciei "${product.title}": está sem o seu link de afiliado`,
+        details:
+          'O anúncio sairia com o link direto da loja, sem comissão para você. ' +
+          'Confira as credenciais da loja em Configurações; no produto, dá para preencher o campo "Link de Afiliado Manual".',
+      })
+      return
+    }
+
     const todosOsGrupos = dbManager.getEnabledAutoSendTargets(sourcePlatform)
     if (todosOsGrupos.length === 0) return
 

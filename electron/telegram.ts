@@ -287,10 +287,10 @@ export class TelegramManager {
         return
       }
 
-      // AliExpress sem credencial não vira comissão — ver
-      // pularAliExpressSemCredencial em affiliate.ts.
-      if (store === 'aliexpress' && this.scraperManager.affiliateManager?.pularAliExpressSemCredencial()) {
-        log.info(`AliExpress sem credenciais, captura ignorada: ${url}`)
+      // Loja sem credencial não vira comissão — ver pularLojaSemCredencial em
+      // affiliate.ts.
+      if (this.scraperManager.affiliateManager?.pularLojaSemCredencial(store)) {
+        log.info(`${store} sem credenciais, captura ignorada: ${url}`)
         return
       }
 
@@ -300,6 +300,16 @@ export class TelegramManager {
       // de outra pessoa.
       const urlDoProduto = scraped.original_url || url
       const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(urlDoProduto, store)
+
+      // Ver o mesmo motivo em whatsapp.ts: sem link de afiliado o anúncio sai
+      // sem comissão, então não sai.
+      if (!affiliateUrl) {
+        throw new Error(
+          `Não consegui gerar o seu link de afiliado (${store}), então não publiquei para não anunciar sem comissão. ` +
+          'Confira as credenciais desta loja em Configurações.'
+        )
+      }
+
       const product = this.dbManager.createProduct({
         ...scraped,
         source: 'telegram',

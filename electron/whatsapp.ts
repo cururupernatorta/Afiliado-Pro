@@ -1674,6 +1674,10 @@ monitorados_salvos=[${salvos}]`,
     const e = erro.toLowerCase()
     const passageiras = [
       'bloqueou o acesso',
+      // Bloqueio anti-robô e falha na geração do link passam sozinhos: a oferta
+      // merece nova tentativa mais tarde.
+      'anti-robô',
+      'link de afiliado',
       'não consegui extrair o preço',
       'nao consegui extrair o preco',
       'captcha',
@@ -1691,6 +1695,10 @@ monitorados_salvos=[${salvos}]`,
       // formato do link, nao do momento. Tentar de novo nunca vai mudar.
       'não tem o código da loja',
       'não devolveu este produto',
+      // Link de campanha, página inicial ou listagem: não vira produto hoje nem
+      // daqui a seis horas. No log do testador, um link de moedas do AliExpress
+      // e links de listagem do Mercado Livre voltavam a cada retentativa.
+      'não aponta para um produto',
     ]
     if (definitivas.some((d) => e.includes(d))) return false
     return passageiras.some((x) => e.includes(x))
@@ -1876,13 +1884,13 @@ monitorados_salvos=[${salvos}]`,
         return
       }
 
-      // AliExpress sem credencial não vira comissão — ver
-      // pularAliExpressSemCredencial. Sai também da fila de retentativa: o app
-      // do testador chegou a ter 110 ofertas esperando, e as do AliExpress
-      // reabriam a página de 5 em 5 minutos sem nunca poder dar comissão.
-      if (store === 'aliexpress' && this.scraperManager.affiliateManager?.pularAliExpressSemCredencial()) {
+      // Loja sem credencial não vira comissão — ver pularLojaSemCredencial.
+      // Sai também da fila de retentativa: o app do testador chegou a ter 150
+      // ofertas esperando, e cada retentativa reabria a página de uma loja que
+      // nunca poderia pagar comissão.
+      if (this.scraperManager.affiliateManager?.pularLojaSemCredencial(store)) {
         this.dbManager.esquecerCapturaAdiada(url)
-        log.info(`AliExpress sem credenciais, captura ignorada: ${url}`)
+        log.info(`${store} sem credenciais, captura ignorada: ${url}`)
         return
       }
 
@@ -1908,6 +1916,19 @@ monitorados_salvos=[${salvos}]`,
       }
 
       const affiliateUrl = await this.scraperManager.affiliateManager?.convertLink(urlDoProduto, store)
+
+      // Sem link de afiliado o anúncio não dá comissão nenhuma: o app publicava
+      // o link cru da loja, e o grupo virava propaganda de graça. Aconteceu com
+      // o testador, que TEM as credenciais preenchidas — a geração falhou e o
+      // produto saiu com o link direto do item. Falha de geração é falha de
+      // captura: a oferta espera e tenta de novo, em vez de sair errada.
+      if (!affiliateUrl) {
+        throw new Error(
+          `Não consegui gerar o seu link de afiliado (${store}), então não publiquei para não anunciar sem comissão. ` +
+          'Confira as credenciais desta loja em Configurações.'
+        )
+      }
+
       const product = this.dbManager.createProduct({
         ...scraped,
         source: 'whatsapp',

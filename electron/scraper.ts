@@ -4,7 +4,13 @@ import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
 import { DatabaseManager, Product } from './database'
 import { renderPageHtml } from './headlessScraper'
-import { MercadoLivreApi, isMercadoLivreProductUrl, resolveMercadoLivreProductUrl } from './mercadoLivreApi'
+import {
+  MercadoLivreApi,
+  isMercadoLivreProductUrl,
+  extractUserProductId,
+  resolverProdutoDoLink,
+  tituloPeloEndereco,
+} from './mercadoLivreApi'
 import { ShopeeApi } from './shopeeApi'
 import { humanizeDescription } from './humanize'
 
@@ -455,17 +461,101 @@ export class ScraperManager {
     }
   }
 
+  // Bloqueio do Mercado Livre, mesma ideia da pausa do AliExpress. A pausa vale
+  // só para o que depende de ABRIR PÁGINA: a API oficial não é barrada e
+  // continua funcionando durante ela.
+  private mlBloqueioAte = 0
+  private mlBloqueiosSeguidos = 0
+  private readonly ML_BLOQUEIOS_ATE_PAUSAR = 3
+  private readonly ML_PAUSA_MS = 2 * 60 * 60 * 1000
+
+  private mercadoLivrePausado(): boolean {
+    return Date.now() < this.mlBloqueioAte
+  }
+
+  private registrarBloqueioMercadoLivre(): void {
+    this.mlBloqueiosSeguidos++
+    if (this.mlBloqueiosSeguidos >= this.ML_BLOQUEIOS_ATE_PAUSAR) {
+      this.mlBloqueioAte = Date.now() + this.ML_PAUSA_MS
+      this.mlBloqueiosSeguidos = 0
+      this.dbManager.addLog({
+        type: 'warning',
+        platform: 'system',
+        message: 'Mercado Livre bloqueou o acesso automático — páginas pausadas por 2 horas',
+        details:
+          'A página veio como verificação de tráfego várias vezes seguidas, e insistir mantém o bloqueio de pé. ' +
+          'Durante a pausa, os produtos de catálogo continuam sendo capturados pela API oficial, que não é barrada. ' +
+          'As demais ofertas ficam na fila e são tentadas depois.',
+      })
+    }
+  }
+
   private async scrapeMercadoLivre(rawUrl: string): Promise<Partial<Product>> {
     // Resolve encurtador/vitrine de terceiro antes de qualquer coisa, e recusa
     // o que não for produto: um link solto da home postado num grupo virava
     // "produto" com o título da página e o primeiro R$ que aparecesse no
     // corpo — e ia parar no grupo de destino com preço inventado.
-    const url = await resolveMercadoLivreProductUrl(rawUrl)
+    // Link que já é do produto não precisa de página nenhuma: vai direto para a
+    // API. Só o que depende de abrir página respeita a pausa por bloqueio.
+    if (!isMercadoLivreProductUrl(rawUrl) && this.mercadoLivrePausado()) {
+      const minutos = Math.ceil((this.mlBloqueioAte - Date.now()) / 60000)
+      throw new Error(
+        'O Mercado Livre bloqueou o acesso automático deste computador. ' +
+        `Pausei a abertura de páginas do Mercado Livre por mais ${minutos} min para o bloqueio passar.`
+      )
+    }
+
+    // Resolve pedindo também o veredito de bloqueio, e oferecendo o navegador
+    // como segunda tentativa quando a requisição simples voltar barrada.
+    const resolvido = await resolverProdutoDoLink(rawUrl, {
+      // Vitrine aberta no navegador: é ela que entrega produto, nome E foto de
+      // uma vez. A página do produto, que teria tudo isso, está barrada — foi
+      // medido: volta com 41 KB e "suspicious-traffic" até fora de bloqueio.
+      preferirNavegador: true,
+      renderizar: async (u) => (await this.fetchPageHeadless(u, false, { waitMs: 9000 })).html,
+    })
+    const url = resolvido.url
+
+    if (resolvido.bloqueado) {
+      this.registrarBloqueioMercadoLivre()
+      throw new Error(
+        'O Mercado Livre bloqueou o acesso automático (página de verificação de conta / tráfego suspeito). ' +
+        'Costuma passar sozinho depois de algumas horas sem tentar. A oferta continua na fila para nova tentativa.'
+      )
+    }
+
     if (!isMercadoLivreProductUrl(url)) {
       throw new Error(
         'Esse link do Mercado Livre não aponta para um produto (parece ser a página inicial ou uma listagem), ' +
         'então não há o que capturar.'
       )
+    }
+
+    // Produto de vendedor (/up/MLBU...): é o formato que mais chega dos grupos,
+    // e até agora ele caía direto na raspagem — que o Mercado Livre barra. A API
+    // oficial atende `/products/{id}/items` para esse formato e devolve preço e
+    // preço original; o nome vem do cartão da vitrine, que já foi baixado na
+    // resolução. Sem abrir a página do produto.
+    const userProductId = extractUserProductId(url)
+    if (userProductId) {
+      const preco = await this.mercadoLivreApi.fetchSellerProductPrice(userProductId)
+      const titulo = resolvido.titulo || tituloPeloEndereco(url)
+      if (preco && titulo) {
+        log.info(`Produto de vendedor do Mercado Livre obtido pela API oficial: ${titulo}`)
+        return {
+          title: titulo,
+          price: preco.price,
+          original_price: preco.original_price,
+          // Foto do cartão da vitrine. Quando não vier, o anúncio sai sem
+          // imagem — bem melhor que perder a oferta inteira, que é o que
+          // acontecia antes.
+          image_url: resolvido.imagem,
+          description: '',
+          original_url: url,
+          store: 'mercado_livre',
+          source: 'manual',
+        }
+      }
     }
 
     // API oficial primeiro: ela devolve nome, imagem, preço e desconto real
@@ -481,12 +571,14 @@ export class ScraperManager {
     const { $, html } = await this.fetchPage(url)
 
     if (this.looksBlocked(html)) {
+      this.registrarBloqueioMercadoLivre()
       throw new Error(
         'O Mercado Livre bloqueou o acesso automático (página de verificação de conta / tráfego suspeito). ' +
         'Costuma passar sozinho depois de algumas horas sem tentar. Enquanto isso, cadastre o produto ' +
         'manualmente informando o preço.'
       )
     }
+    this.mlBloqueiosSeguidos = 0
 
     const title = $('meta[property="og:title"]').attr('content') || $('h1').first().text().trim()
 
@@ -497,7 +589,10 @@ export class ScraperManager {
         'span[class*="price"]',
         'div[class*="price"]',
       ],
-      bodyFallback: true,
+      // Sem bodyFallback, pelo mesmo motivo do AliExpress: numa página
+      // barrada ou de listagem, QUALQUER "R$ X" do corpo vira preço — banner,
+      // recomendado, frete. Já aconteceu de verdade neste app, com um link da
+      // home virando "produto" de R$ 100. Melhor falhar alto.
     })
 
     const imageUrl =
@@ -707,8 +802,55 @@ export class ScraperManager {
     return { title, price, originalPrice, imageUrl, description }
   }
 
+  // Bloqueio anti-robô do AliExpress — ver registrarBloqueioAliExpress.
+  private aliexpressBloqueioAte = 0
+  private aliexpressBloqueiosSeguidos = 0
+  private readonly ALIEXPRESS_BLOQUEIOS_ATE_PAUSAR = 3
+  private readonly ALIEXPRESS_PAUSA_MS = 2 * 60 * 60 * 1000
+
+  /**
+   * A página que voltou é a verificação anti-robô do AliExpress?
+   *
+   * Confirmado no log do testador com três produtos diferentes: ~127 KB,
+   * título vazio e um único texto, "Click to feedback >". A mesma URL, aberta
+   * de outro computador no mesmo dia, carregou o produto com preço. Ou seja,
+   * não é a página que quebrou: é o IP dele que está bloqueado.
+   */
+  private ehPaginaAntiRobo(titulo: string, textoVisivel: string): boolean {
+    if (/click to feedback/i.test(textoVisivel)) return true
+    // Página de produto tem centenas de caracteres visíveis. Título vazio com
+    // quase nenhum texto é tela de bloqueio, não produto.
+    return titulo.length === 0 && textoVisivel.length < 80
+  }
+
+  /**
+   * Conta os bloqueios seguidos e pausa o AliExpress quando eles se repetem.
+   *
+   * Sem a pausa, a fila de retentativa reabria a página de cada oferta várias
+   * vezes — o log do testador mostra tentativa 6 e 7, com 150 ofertas na fila.
+   * Insistir no meio de um bloqueio por excesso de acesso é o que mantém o
+   * bloqueio de pé.
+   */
+  private registrarBloqueioAliExpress(): void {
+    this.aliexpressBloqueiosSeguidos++
+    if (this.aliexpressBloqueiosSeguidos >= this.ALIEXPRESS_BLOQUEIOS_ATE_PAUSAR) {
+      this.aliexpressBloqueioAte = Date.now() + this.ALIEXPRESS_PAUSA_MS
+      this.aliexpressBloqueiosSeguidos = 0
+      this.dbManager.addLog({
+        type: 'warning',
+        platform: 'system',
+        message: 'AliExpress bloqueou o acesso automático — capturas pausadas por 2 horas',
+        details:
+          'A página do produto voltou como verificação anti-robô várias vezes seguidas. ' +
+          'Insistir mantém o bloqueio de pé, então as capturas do AliExpress ficam pausadas por 2 horas. ' +
+          'As ofertas continuam na fila e são tentadas de novo depois.',
+      })
+    }
+  }
+
   private async scrapeAliExpress(rawUrl: string): Promise<Partial<Product>> {
     let title = '', price = 0, originalPrice = 0, imageUrl: string | undefined, description = ''
+    let pareceAntiRobo = false
     // Trilha de diagnóstico: quando isso falha em produção não tem como reproduzir
     // localmente (rede/IP/sessão diferentes do usuário) — sem isso, cada falha só
     // dá o alerta genérico e nenhuma pista de qual etapa realmente travou. Registrado
@@ -726,6 +868,27 @@ export class ScraperManager {
       if (url !== rawUrl) trail.push(`resolvido: ${rawUrl} -> ${url}`)
     } catch (err) {
       trail.push(`resolução de link falhou, usando original: ${(err as Error).message}`)
+    }
+
+    // O AliExpress está bloqueando este computador. Enquanto durar, nem abre o
+    // navegador: cada abertura é mais um acesso para um bloqueio que existe
+    // justamente por excesso de acessos. Ver `registrarBloqueioAliExpress`.
+    if (Date.now() < this.aliexpressBloqueioAte) {
+      const minutos = Math.ceil((this.aliexpressBloqueioAte - Date.now()) / 60000)
+      throw new Error(
+        `O AliExpress bloqueou o acesso automático deste computador (verificação anti-robô). ` +
+        `Pausei as capturas do AliExpress por mais ${minutos} min para o bloqueio passar.`
+      )
+    }
+
+    // Link que não leva a um produto. Medido no log do testador: um link curto
+    // resolveu para `aliexpress.com/p/coin-pc-index/index.html`, a página de
+    // moedas, e o app ficou reabrindo ela a cada retentativa. Não é falha de
+    // momento, é o que o link é.
+    if (!/\/item\/\d+\.html/.test(url)) {
+      throw new Error(
+        'Esse link do AliExpress não aponta para um produto (parece uma página de campanha ou de moedas), então não há o que capturar.'
+      )
     }
 
     // O AliExpress renderiza a página do produto 100% no cliente (renderMode:
@@ -768,6 +931,7 @@ export class ScraperManager {
         const titulo = $('title').first().text().replace(/\s+/g, ' ').trim().slice(0, 70)
         const visivel = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 160)
         trail.push(`página devolvida: título="${titulo || '(vazio)'}", texto="${visivel || '(vazio)'}"`)
+        pareceAntiRobo = this.ehPaginaAntiRobo(titulo, visivel)
       }
       if (extracted.price > 0) {
         title = extracted.title || title
@@ -794,11 +958,21 @@ export class ScraperManager {
       } catch (err) {
         log.warn('Erro ao registrar log de diagnóstico do AliExpress:', err)
       }
+      if (pareceAntiRobo) {
+        this.registrarBloqueioAliExpress()
+        throw new Error(
+          'O AliExpress mostrou a verificação anti-robô em vez da página do produto — ' +
+          'é bloqueio temporário por excesso de acessos, e costuma passar sozinho depois de algumas horas.'
+        )
+      }
       throw new Error(
         'Não consegui extrair o preço do AliExpress, mesmo com o browser headless. Use o campo ' +
         '"Link de Afiliado Manual" e informe o preço manualmente ao cadastrar o produto.'
       )
     }
+
+    // Deu certo: o bloqueio (se havia) passou.
+    this.aliexpressBloqueiosSeguidos = 0
 
     return {
       title: title || 'Produto AliExpress',
@@ -1024,6 +1198,15 @@ export class ScraperManager {
   private parsePrice(priceText: string): number {
     if (!priceText) return 0
     let cleaned = priceText.replace(/R\$|\$|EUR|USD|BRL|€|£|¥/gi, '').replace(/\s/g, '')
+
+    // Apara pontuação solta nas pontas ANTES de decidir quem é decimal.
+    //
+    // As expressões que leem preço dos scripts capturam `[0-9.,]+`, e num JSON
+    // como `"value": 297.88, "currency":"BRL"` isso leva a vírgula do próximo
+    // campo junto: vinha "297.88,". A regra abaixo via a vírgula por último,
+    // concluía formato brasileiro, jogava o ponto fora — e R$ 297,88 virava
+    // R$ 29.788 no anúncio. Preço errado é pior que captura falhada.
+    cleaned = cleaned.replace(/^[.,]+/, '').replace(/[.,]+$/, '')
 
     const commaIndex = cleaned.lastIndexOf(',')
     const dotIndex = cleaned.lastIndexOf('.')

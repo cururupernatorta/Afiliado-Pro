@@ -321,40 +321,56 @@ export class AffiliateManager {
     this.aliexpressBloqueadoAte = 0
   }
 
-  /** As três credenciais que o link de afiliado do AliExpress exige estão preenchidas? */
-  aliexpressConfigurado(): boolean {
-    const c = this.dbManager.getConfig() as any
-    return !!(c?.aliexpress_app_key && c?.aliexpress_app_secret && c?.aliexpress_tracking_id)
+  /** O que cada loja exige em Configurações para o link de afiliado existir. */
+  private readonly CREDENCIAIS_POR_LOJA: Record<string, { campos: string[]; nome: string; pede: string }> = {
+    aliexpress: {
+      campos: ['aliexpress_app_key', 'aliexpress_app_secret', 'aliexpress_tracking_id'],
+      nome: 'AliExpress',
+      pede: 'App Key, App Secret e Tracking ID',
+    },
+    amazon: { campos: ['amazon_tag'], nome: 'Amazon', pede: 'a Associate Tag' },
+    shopee: { campos: ['shopee_app_id', 'shopee_app_secret'], nome: 'Shopee', pede: 'App ID e App Secret' },
+    mercado_livre: { campos: ['mercado_livre_matt_tool'], nome: 'Mercado Livre', pede: 'o matt_tool' },
   }
 
-  private ultimoAvisoAliExpressSemCredencial = 0
+  /** A loja tem tudo que o link de afiliado dela exige? */
+  lojaConfigurada(store: string): boolean {
+    const exigido = this.CREDENCIAIS_POR_LOJA[store]
+    if (!exigido) return true
+    const c = this.dbManager.getConfig() as any
+    return exigido.campos.every((campo) => !!c?.[campo])
+  }
+
+  private ultimoAvisoSemCredencial: Record<string, number> = {}
 
   /**
-   * A captura deste link do AliExpress deve ser pulada por falta de credencial?
+   * A captura deste link deve ser pulada por falta de credencial da loja?
    *
-   * Sem App Key, App Secret e Tracking ID, `convertAliExpress` devolve null e o
-   * anúncio sai com o link comum do produto: nenhuma comissão para o usuário.
-   * Medido no banco do dono, que não tem as credenciais: 2 capturas e 11
-   * falhas do AliExpress — cada falha abrindo a página num navegador invisível
-   * por até 25 s, e cada acerto virando propaganda de graça para a loja. Pular
-   * a captura corta as duas coisas.
+   * Sem credencial, `convertLink` devolve null e o anúncio sairia com o link
+   * comum da loja: nenhuma comissão para o usuário. Medido no banco do dono,
+   * que não tem tag da Amazon nem credencial de Shopee e AliExpress: 194
+   * produtos da Amazon anunciados sem comissão em 15 dias, mais 231 falhas de
+   * captura dessas três lojas — cada uma abrindo página, gastando rede e
+   * alimentando bloqueio, para algo que nunca poderia dar dinheiro.
    *
-   * O aviso sai no máximo uma vez a cada 6 horas, compartilhado entre WhatsApp e
-   * Telegram: um canal de ofertas manda dezenas de links do AliExpress por hora,
-   * e uma linha por link enterraria o resto do log.
+   * Pular aqui, ANTES de abrir qualquer página, corta as duas coisas. O aviso
+   * sai no máximo uma vez a cada 6 horas por loja, e é compartilhado entre
+   * WhatsApp e Telegram: um canal manda dezenas de links por hora, e uma linha
+   * por link enterraria o resto do log.
    */
-  pularAliExpressSemCredencial(): boolean {
-    if (this.aliexpressConfigurado()) return false
+  pularLojaSemCredencial(store: string): boolean {
+    if (this.lojaConfigurada(store)) return false
+    const exigido = this.CREDENCIAIS_POR_LOJA[store]
     const agora = Date.now()
-    if (agora - this.ultimoAvisoAliExpressSemCredencial > 6 * 60 * 60 * 1000) {
-      this.ultimoAvisoAliExpressSemCredencial = agora
+    if (agora - (this.ultimoAvisoSemCredencial[store] ?? 0) > 6 * 60 * 60 * 1000) {
+      this.ultimoAvisoSemCredencial[store] = agora
       this.dbManager.addLog({
         type: 'warning',
         platform: 'system',
-        message: 'Ofertas do AliExpress não estão sendo anunciadas: faltam as credenciais',
+        message: `Ofertas da ${exigido.nome} não estão sendo anunciadas: falta configurar`,
         details:
-          'Sem App Key, App Secret e Tracking ID, o link do AliExpress não leva o seu código de afiliado — o anúncio sairia sem comissão para você. ' +
-          'Preencha as três em Configurações para voltar a anunciar produtos do AliExpress.',
+          `Sem ${exigido.pede}, o link não leva o seu código de afiliado — o anúncio sairia sem comissão para você. ` +
+          `Preencha em Configurações para voltar a anunciar produtos da ${exigido.nome}.`,
       })
     }
     return true

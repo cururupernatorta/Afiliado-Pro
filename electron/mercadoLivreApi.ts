@@ -1,4 +1,5 @@
 import axios from 'axios'
+import * as cheerio from 'cheerio'
 import log from 'electron-log'
 import { DatabaseManager, Product } from './database'
 
@@ -27,6 +28,51 @@ const API_BASE = 'https://api.mercadolibre.com'
 export function extractCatalogProductId(url: string): string | null {
   const match = url.match(/\/p\/(ML[A-Z]?\d+)/i)
   return match ? match[1].toUpperCase() : null
+}
+
+/**
+ * Produto de vendedor: /up/MLBU123...
+ *
+ * É o formato que mais chega dos grupos — todo link `meli.la` testado no log do
+ * testador resolveu para `/up/`. A API não atende `GET /products/MLBU...`
+ * (403), mas ATENDE `GET /products/MLBU.../items`, que devolve preço e preço
+ * original. Medido ao vivo com credencial real em 20/09/2026.
+ */
+export function extractUserProductId(url: string): string | null {
+  const match = url.match(/\/up\/(ML[A-Z]*\d+)/i)
+  return match ? match[1].toUpperCase() : null
+}
+
+/**
+ * Título tirado do próprio endereço: o Mercado Livre monta o caminho com o nome
+ * do produto. Serve de reserva quando o cartão da vitrine não entrega o texto.
+ */
+export function tituloPeloEndereco(url: string): string | null {
+  const match = url.match(/mercadolivre\.com(?:\.br)?\/([^/]+)\/(?:p|up)\//i)
+  if (!match) return null
+  const nome = match[1]
+    .split('-')
+    .filter(Boolean)
+    .map((parte) => (parte.length > 2 ? parte[0].toUpperCase() + parte.slice(1) : parte))
+    .join(' ')
+    .trim()
+  return nome.length >= 8 ? nome : null
+}
+
+/**
+ * A página que voltou é a verificação de tráfego do Mercado Livre?
+ *
+ * Ele não usa captcha: responde HTTP 200 com uma página de "verificação de
+ * conta", sem dado nenhum do produto. Sem reconhecer isso, o app dizia "esse
+ * link não aponta para um produto" e DESCARTAVA a oferta — no log do testador
+ * foram 411 ofertas perdidas assim, que na verdade eram links bons num momento
+ * de bloqueio.
+ */
+export function pareceBloqueioDoMercadoLivre(html: string): boolean {
+  if (!html || html.length < 400) return true
+  const lower = html.toLowerCase()
+  return ['suspicious-traffic', 'account-verification', 'captcha', 'unusual traffic', 'request blocked', 'access denied']
+    .some((sinal) => lower.includes(sinal))
 }
 
 /**
@@ -91,6 +137,43 @@ export function extractFeaturedProductUrl(html: string): string | null {
   return /\/(?:p|up)\/ML[A-Z]*\d+|\/ML[A-Z]?-?\d{6,}/i.test(url) ? url : null
 }
 
+/**
+ * O produto em destaque da vitrine, com o título que está no cartão.
+ *
+ * O título sai daqui de propósito: para produto de vendedor (/up/), a API não
+ * devolve nome nenhum, e esta página o app já baixou para descobrir qual é o
+ * produto. Ou seja, o nome vem sem nenhuma requisição a mais — e sem abrir a
+ * página do produto, que é justamente o que o Mercado Livre barra.
+ */
+export function extractFeaturedProduct(html: string): { url: string; titulo?: string; imagem?: string } | null {
+  const url = extractFeaturedProductUrl(html)
+  if (!url) return null
+
+  let titulo: string | undefined
+  let imagem: string | undefined
+  try {
+    const $ = cheerio.load(html)
+    const link = $('a[href*="card-featured"]').first()
+    const cartao = link.closest('li').length ? link.closest('li') : link.parent().parent()
+    const texto = cartao.find('h2, h3, [class*="title"]').first().text().replace(/\s+/g, ' ').trim()
+    if (texto.length >= 8) titulo = texto
+
+    // A foto só aparece com a vitrine RENDERIZADA: as imagens dos cartões são
+    // carregadas por script. Medido — com requisição simples não vem nenhuma;
+    // aberta no navegador, o cartão em destaque traz a imagem do produto.
+    const src = cartao
+      .find('img')
+      .map((_, el) => $(el).attr('src') || $(el).attr('data-src'))
+      .get()
+      .find((u) => typeof u === 'string' && /mlstatic\.com\/D_/.test(u) && !u.includes('{'))
+    if (src) imagem = src
+  } catch {
+    // Vitrine com HTML estranho: o título do endereço resolve abaixo.
+  }
+
+  return { url, titulo: titulo || tituloPeloEndereco(url) || undefined, imagem }
+}
+
 /** @deprecated use extractFeaturedProductUrl — mantido para os testes antigos. */
 export function extractFeaturedProductId(html: string): string | null {
   const url = extractFeaturedProductUrl(html)
@@ -123,6 +206,36 @@ export function buildProductUrl(productId: string): string {
  * concorrente. Devolve a URL de entrada quando não consegue resolver.
  */
 export async function resolveMercadoLivreProductUrl(url: string): Promise<string> {
+  return (await resolverProdutoDoLink(url)).url
+}
+
+export interface ProdutoDoLink {
+  /** URL do produto, ou a última que conseguimos alcançar. */
+  url: string
+  /** Título lido do cartão da vitrine, quando veio de link de afiliado. */
+  titulo?: string
+  /** Foto do cartão em destaque — só vem com a vitrine renderizada. */
+  imagem?: string
+  /** A página veio como verificação de tráfego — não é link ruim, é bloqueio. */
+  bloqueado: boolean
+}
+
+/**
+ * Versão completa da resolução: além da URL, diz se o Mercado Livre barrou o
+ * acesso e devolve o título do cartão da vitrine.
+ *
+ * A diferença entre "link ruim" e "fui barrado" é o que mais custou oferta no
+ * log do testador: as duas situações davam a mesma mensagem, e a oferta boa era
+ * descartada como se o link não prestasse.
+ *
+ * `renderizar` é opcional e recebe a URL da vitrine: quando a requisição simples
+ * volta barrada, um navegador de verdade às vezes passa. Quem chama decide se
+ * oferece essa segunda tentativa (o raspador oferece; a geração de link não).
+ */
+export async function resolverProdutoDoLink(
+  url: string,
+  opcoes: { renderizar?: (url: string) => Promise<string>; preferirNavegador?: boolean } = {}
+): Promise<ProdutoDoLink> {
   let atual = url
   try {
     if (isMercadoLivreShortLink(atual)) {
@@ -136,23 +249,49 @@ export async function resolveMercadoLivreProductUrl(url: string): Promise<string
       if (typeof finalUrl === 'string' && finalUrl) atual = finalUrl
     }
 
-    if (!isAffiliateStorefrontUrl(atual)) return atual
+    if (!isAffiliateStorefrontUrl(atual)) return { url: atual, bloqueado: false }
 
-    const { data } = await axios.get(atual, {
-      timeout: 20000,
-      validateStatus: () => true,
-      headers: { 'User-Agent': DESKTOP_UA },
-    })
-    const produto = extractFeaturedProductUrl(String(data))
-    if (!produto) {
-      log.warn(`Vitrine de afiliado sem produto identificável: ${atual.substring(0, 100)}`)
-      return atual
+    // Quem vai capturar o produto pede o navegador de saída: é a única forma de
+    // a foto vir junto, e evita baixar a mesma vitrine duas vezes. Quem só quer
+    // o endereço (geração do link de afiliado) fica na requisição simples.
+    let html = ''
+    if (opcoes.preferirNavegador && opcoes.renderizar) {
+      try {
+        html = await opcoes.renderizar(atual)
+      } catch (err) {
+        log.warn('Navegador não abriu a vitrine; tentando requisição simples:', (err as Error).message)
+      }
     }
-    log.info(`Link de afiliado de terceiro resolvido para: ${produto}`)
-    return produto
+
+    if (!html) {
+      const { data } = await axios.get(atual, {
+        timeout: 20000,
+        validateStatus: () => true,
+        headers: { 'User-Agent': DESKTOP_UA },
+      })
+      html = String(data)
+    }
+
+    if (pareceBloqueioDoMercadoLivre(html) && opcoes.renderizar && !opcoes.preferirNavegador) {
+      log.info('Vitrine do Mercado Livre veio barrada; tentando com o navegador')
+      try {
+        html = await opcoes.renderizar(atual)
+      } catch (err) {
+        log.warn('Navegador também não abriu a vitrine:', (err as Error).message)
+      }
+    }
+    if (pareceBloqueioDoMercadoLivre(html)) return { url: atual, bloqueado: true }
+
+    const destaque = extractFeaturedProduct(html)
+    if (!destaque) {
+      log.warn(`Vitrine de afiliado sem produto identificável: ${atual.substring(0, 100)}`)
+      return { url: atual, bloqueado: false }
+    }
+    log.info(`Link de afiliado de terceiro resolvido para: ${destaque.url}`)
+    return { url: destaque.url, titulo: destaque.titulo, imagem: destaque.imagem, bloqueado: false }
   } catch (err) {
     log.warn('Não consegui resolver o link do Mercado Livre:', (err as Error).message)
-    return atual
+    return { url: atual, bloqueado: false }
   }
 }
 
@@ -253,6 +392,43 @@ export class MercadoLivreApi {
     } catch (error: any) {
       log.warn(`Não consegui descobrir a categoria do Mercado Livre para "${keyword}":`, error?.response?.status || error.message)
       this.categoryCache.set(key, null)
+      return null
+    }
+  }
+
+  /**
+   * Preço de um produto de VENDEDOR (/up/MLBU...), pela API oficial.
+   *
+   * Medido ao vivo com credencial real: `GET /products/MLBU.../items` responde
+   * 200 com preço e preço original, embora `GET /products/MLBU...` responda 403
+   * e `GET /items/{id}` de outro vendedor também. Ou seja: dá para ter o preço
+   * sem abrir a página do produto, que é o que o Mercado Livre barra.
+   *
+   * Nome e foto não vêm por aqui — o nome sai do cartão da vitrine (ver
+   * extractFeaturedProduct) e a foto é um extra, não um impedimento.
+   */
+  async fetchSellerProductPrice(userProductId: string): Promise<{ price: number; original_price?: number } | null> {
+    const token = await this.getToken()
+    if (!token) return null
+    try {
+      const { data } = await axios.get(`${API_BASE}/products/${userProductId}/items`, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000,
+      })
+      const ofertas: any[] = data?.results ?? []
+      const validas = ofertas.filter((o) => Number.isFinite(Number(o?.price)) && Number(o.price) > 0)
+      if (validas.length === 0) return null
+
+      // Menor preço entre os anúncios, e o "de" do MESMO anúncio: misturar os
+      // dois inventaria um desconto que não existe.
+      const melhor = validas.reduce((a, b) => (Number(a.price) <= Number(b.price) ? a : b))
+      const price = Number(melhor.price)
+      const original = Number(melhor.original_price)
+      return { price, original_price: Number.isFinite(original) && original > price ? original : undefined }
+    } catch (error: any) {
+      const status = error?.response?.status
+      if (status === 401 || status === 403) this.token = null
+      log.warn(`API do Mercado Livre não devolveu o preço de ${userProductId}: ${status || error.message}`)
       return null
     }
   }
