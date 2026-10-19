@@ -303,6 +303,9 @@ export class ScraperManager {
    */
   private pareceLinkDeProduto(url: string): boolean {
     if (chaveDeLojaDoProduto(url)) return true
+    // Produto de vendedor do ML (/up/MLBU...): a chave de loja não o reconhece
+    // (o "U" quebra o padrão MLB-123), e é o formato que mais chega dos grupos.
+    if (/mercadolivre\.com/i.test(url) && isMercadoLivreProductUrl(url)) return true
     return [
       /\/\/(?:[^/]*\.)?(?:amzn\.(?:to|eu)|a\.co|link\.amazon)\//i,
       /\/\/(?:[^/]*\.)?meli\.la\//i,
@@ -311,6 +314,21 @@ export class ScraperManager {
       /shopee\.[a-z.]+\/product\/\d+\/\d+/i,
       /\/\/(?:a|s\.click|star)\.aliexpress\.com\//i,
     ].some((padrao) => padrao.test(url))
+  }
+
+  /**
+   * Loja de verdade que o app não atende. Lista fechada de propósito: só entra
+   * aqui o que é LOJA (vende o produto), nunca um agregador — esses têm botão
+   * para a loja certa e precisam continuar sendo abertos.
+   */
+  private ehLojaNaoSuportada(url: string): boolean {
+    let host = ''
+    try {
+      host = new URL(url).hostname.toLowerCase()
+    } catch {
+      return false
+    }
+    return /(?:^|\.)(?:kabum|magazineluiza|magazinevoce|magalu|casasbahia|pontofrio|americanas|submarino|shoptime|terabyteshop|pichau|carrefour|netshoes|centauro|dafiti|zattini|shein|natura|boticario|samsung|lg|dell|lenovo)\.com(?:\.br)?$/.test(host)
   }
 
   /**
@@ -409,6 +427,26 @@ export class ScraperManager {
     if (destino && destino !== url && this.affiliateManager.detectStore(destino) && this.pareceLinkDeProduto(destino)) {
       log.info(`Agregador resolvido pelo redirecionamento: ${url.substring(0, 45)} -> ${destino.substring(0, 70)}`)
       return destino
+    }
+
+    // O redirecionamento já mostrou que não há produto para nós: abrir a
+    // página no navegador só confirmaria isso depois de 6 a 30 segundos.
+    // Medido com links reais: KaBuM (loja não suportada), live da Shopee e
+    // página de promoção da Amazon. A página de uma LOJA não tem botão para
+    // outra loja — só a de um agregador tem, e essa continua sendo aberta.
+    // Página de bloqueio da loja (captcha, verificação de conta) NÃO é "loja
+    // sem produto": o link é bom e só bateu num bloqueio momentâneo. Esse caso
+    // segue o caminho antigo, pelo navegador.
+    const ehPaginaDeBloqueio = !!destino && /captcha|account-verification|suspicious|\/gz\/|\/errors\//i.test(destino)
+    if (destino && destino !== url && !ehPaginaDeBloqueio) {
+      if (this.ehLojaNaoSuportada(destino)) {
+        log.info(`Agregador leva a loja não suportada: ${url.substring(0, 45)} -> ${destino.substring(0, 70)}`)
+        return null
+      }
+      if (this.affiliateManager.detectStore(destino)) {
+        log.info(`Agregador leva a uma página da loja que não é produto: ${url.substring(0, 45)} -> ${destino.substring(0, 70)}`)
+        return null
+      }
     }
 
     // Essas paginas costumam ser client-side: no teste real o `axios` levou
@@ -531,6 +569,16 @@ export class ScraperManager {
 
   private mercadoLivrePausado(): boolean {
     return Date.now() < this.mlBloqueioAte
+  }
+
+  /**
+   * A loja está em pausa por bloqueio? A fila de nova tentativa consulta isto
+   * para não gastar as tentativas de uma oferta enquanto a pausa dura.
+   */
+  lojaPausada(loja: string): boolean {
+    if (loja === 'mercado_livre') return this.mercadoLivrePausado()
+    if (loja === 'aliexpress') return Date.now() < this.aliexpressBloqueioAte
+    return false
   }
 
   private registrarBloqueioMercadoLivre(): void {

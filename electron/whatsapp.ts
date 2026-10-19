@@ -137,6 +137,8 @@ export class WhatsAppManager {
   private ultimaRespostaDeHistorico = 0
   private readonly PRAZO_RESPOSTA_VARREDURA_MS = 2 * 60 * 1000
   private readonly RETENTATIVA_CAPTURA_MS = 5 * 60 * 1000
+  // Idade máxima de uma oferta na fila de nova tentativa — ver descartarCapturasAntigas.
+  private readonly OFERTA_VALE_POR_HORAS = 12
   private readonly JANELA_INSCRICAO_MS = 90000
   private relatorioTimer: NodeJS.Timeout | null = null
   private readonly RELATORIO_INTERVALO_MS = 30 * 60 * 1000
@@ -1806,7 +1808,25 @@ monitorados_salvos=[${salvos}]`,
 
   private async tentarCapturasAdiadas(): Promise<void> {
     if (this.status !== 'connected') return
-    const vencidas = this.dbManager.capturasVencidas(3)
+
+    // Oferta velha não volta para o grupo — ver descartarCapturasAntigas.
+    const antigas = this.dbManager.descartarCapturasAntigas(this.OFERTA_VALE_POR_HORAS)
+    if (antigas > 0) {
+      this.dbManager.addLog({
+        type: 'info',
+        platform: 'whatsapp',
+        message: `${antigas} oferta(s) antiga(s) tirada(s) da fila de nova tentativa`,
+        details: `Tinham mais de ${this.OFERTA_VALE_POR_HORAS} horas: a promoção provavelmente já acabou, e anunciar agora seria divulgar oferta vencida.`,
+      })
+    }
+
+    // Loja em pausa por bloqueio: as ofertas dela esperam a pausa acabar. Sem
+    // isto, cada retentativa falhava na hora (a pausa nem abre a página) e
+    // contava como tentativa — a oferta gastava as 6 chances dentro da pausa.
+    // O filtro vai na própria consulta, então as ofertas da loja pausada
+    // também não escondem as das outras lojas.
+    const lojasEmPausa = ['mercado_livre', 'aliexpress'].filter((loja) => this.scraperManager.lojaPausada?.(loja))
+    const vencidas = this.dbManager.capturasVencidas(3, lojasEmPausa)
     for (const item of vencidas) {
       // Ja capturado por outro caminho enquanto esperava: nao ha o que tentar.
       if (this.dbManager.productExistsByUrl(item.url) || this.dbManager.produtoPorLinkRecebido(item.url)) {
@@ -1936,7 +1956,11 @@ monitorados_salvos=[${salvos}]`,
       this.dbManager.addLog({
         type: 'warning',
         platform: 'whatsapp',
-        message: 'Link recebido de grupo monitorado, mas loja não reconhecida',
+        // Não é só "loja desconhecida": também cai aqui link de agregador que
+        // leva a uma loja não suportada (KaBuM) ou a uma página da loja que não
+        // é produto (promoção da Amazon, live da Shopee). Dizer "loja não
+        // reconhecida" nesses casos fazia parecer que a Amazon tinha quebrado.
+        message: 'Link recebido de grupo monitorado, mas não leva a um produto de loja suportada',
         details: `De: ${nomeDaOrigem()} | URL: ${url}`,
       })
       return
@@ -2067,7 +2091,7 @@ monitorados_salvos=[${salvos}]`,
       }
 
       if (this.falhaEhPassageira(motivo)) {
-        const marcado = this.dbManager.adiarCaptura(url, origem, motivo)
+        const marcado = this.dbManager.adiarCaptura(url, origem, motivo, store)
         this.dbManager.addLog({
           type: marcado ? 'info' : 'warning',
           platform: 'whatsapp',

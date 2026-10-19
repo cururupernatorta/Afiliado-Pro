@@ -463,6 +463,32 @@ export class DatabaseManager extends EventEmitter {
       log.error('Falha na migração de auto_update_enabled:', err)
     }
 
+    // Migração: loja de cada oferta na fila de nova tentativa.
+    //
+    // Com a loja gravada, a consulta das ofertas vencidas já deixa de fora as
+    // lojas em pausa por bloqueio — em vez de ler a fila inteira e filtrar no
+    // código. As linhas que já estavam na fila recebem a loja pelo endereço,
+    // pelos mesmos domínios que o detectStore reconhece; o que não casar fica
+    // nulo e conta como "loja desconhecida", que nunca é pausada.
+    try {
+      const filaCols = this.db.prepare('PRAGMA table_info(capturas_adiadas)').all() as Array<{ name: string }>
+      if (!filaCols.some((c) => c.name === 'loja')) {
+        this.db.exec('ALTER TABLE capturas_adiadas ADD COLUMN loja TEXT')
+        this.db.exec(`
+          UPDATE capturas_adiadas SET loja = CASE
+            WHEN url LIKE '%meli.la/%' OR url LIKE '%mercadolivre.%' OR url LIKE '%mercadolibre.%' THEN 'mercado_livre'
+            WHEN url LIKE '%aliexpress.%' THEN 'aliexpress'
+            WHEN url LIKE '%amazon.%' OR url LIKE '%amzn.%' OR url LIKE '%//a.co/%' OR url LIKE '%link.amazon/%' THEN 'amazon'
+            WHEN url LIKE '%shopee.%' OR url LIKE '%shp.ee/%' THEN 'shopee'
+          END
+          WHERE loja IS NULL
+        `)
+        log.info('Migração: coluna loja adicionada à fila de nova tentativa')
+      }
+    } catch (err) {
+      log.error('Falha na migração da loja na fila de nova tentativa:', err)
+    }
+
     // Migração: adiciona aliexpress_tracking_id em bancos já existentes
     // (CREATE TABLE IF NOT EXISTS não altera tabelas que já foram criadas antes)
     try {
@@ -1082,7 +1108,13 @@ export class DatabaseManager extends EventEmitter {
    * bloqueio de pe. Depois de 6 tentativas desiste — passou de 9 horas, e a
    * oferta ja nao vale.
    */
-  adiarCaptura(url: string, origem: string | undefined, erro: string): { tentativas: number; minutos: number } | null {
+  adiarCaptura(
+    url: string,
+    origem: string | undefined,
+    erro: string,
+    /** Loja da oferta — permite pular as lojas em pausa (ver capturasVencidas). */
+    loja?: string | null
+  ): { tentativas: number; minutos: number } | null {
     const base = urlBaseDoProduto(url)
     const atual = this.db
       .prepare('SELECT tentativas FROM capturas_adiadas WHERE url = ?')
@@ -1105,15 +1137,16 @@ export class DatabaseManager extends EventEmitter {
     const minutos = 10 * 2 ** (tentativas - 1)
     this.db
       .prepare(`
-        INSERT INTO capturas_adiadas (url, origem, erro, tentativas, proxima_em)
-        VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' minutes'))
+        INSERT INTO capturas_adiadas (url, origem, erro, tentativas, proxima_em, loja)
+        VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' minutes'), ?)
         ON CONFLICT(url) DO UPDATE SET
           origem = excluded.origem,
           erro = excluded.erro,
           tentativas = excluded.tentativas,
-          proxima_em = excluded.proxima_em
+          proxima_em = excluded.proxima_em,
+          loja = COALESCE(excluded.loja, loja)
       `)
-      .run(base, origem ?? null, erro.substring(0, 300), tentativas, minutos)
+      .run(base, origem ?? null, erro.substring(0, 300), tentativas, minutos, loja ?? null)
     return { tentativas, minutos }
   }
 
@@ -1125,11 +1158,41 @@ export class DatabaseManager extends EventEmitter {
     return !!row
   }
 
-  /** Ofertas cuja hora de tentar de novo ja chegou. */
-  capturasVencidas(limite = 5): Array<{ url: string; origem: string | null; tentativas: number }> {
+  /**
+   * Tira da fila as ofertas que ficaram velhas demais para valer a pena.
+   *
+   * Oferta é perecível, e a regra das 6 tentativas (~10 horas de espera)
+   * existia justamente para isso — mas ela conta TENTATIVAS, não idade. Com o
+   * app fechado, o relógio parava: medido na máquina do dono, depois de um mês
+   * sem abrir o app, 69 das 78 ofertas na fila eram de setembro, e ao
+   * reconectar o app voltou a tentá-las e ANUNCIOU no grupo promoções que
+   * tinham acabado havia um mês. De quebra, cada uma dessas tentativas batia no
+   * Mercado Livre bem quando ele estava bloqueando.
+   *
+   * Devolve quantas saíram.
+   */
+  descartarCapturasAntigas(horas = 12): number {
+    const r = this.db
+      // COALESCE: linha sem created_at não pode ficar imune à validade.
+      .prepare("DELETE FROM capturas_adiadas WHERE COALESCE(created_at, proxima_em) < datetime('now', ?)")
+      .run('-' + Math.max(1, Math.round(horas)) + ' hours')
+    return r.changes
+  }
+
+  /**
+   * Ofertas cuja hora de tentar de novo ja chegou.
+   *
+   * `lojasEmPausa` fica de fora já na consulta: as ofertas dessas lojas esperam
+   * a pausa acabar sem gastar tentativa, e não escondem as das outras lojas.
+   * Loja nula (desconhecida) nunca é excluída.
+   */
+  capturasVencidas(limite = 5, lojasEmPausa: string[] = []): Array<{ url: string; origem: string | null; tentativas: number }> {
+    const fora = lojasEmPausa.length
+      ? ` AND (loja IS NULL OR loja NOT IN (${lojasEmPausa.map(() => '?').join(', ')}))`
+      : ''
     return this.db
-      .prepare("SELECT url, origem, tentativas FROM capturas_adiadas WHERE proxima_em <= datetime('now') ORDER BY proxima_em LIMIT ?")
-      .all(limite) as Array<{ url: string; origem: string | null; tentativas: number }>
+      .prepare(`SELECT url, origem, tentativas FROM capturas_adiadas WHERE proxima_em <= datetime('now')${fora} ORDER BY proxima_em LIMIT ?`)
+      .all(...lojasEmPausa, limite) as Array<{ url: string; origem: string | null; tentativas: number }>
   }
 
   esquecerCapturaAdiada(url: string): void {

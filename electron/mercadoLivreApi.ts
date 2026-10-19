@@ -251,6 +251,12 @@ export async function resolverProdutoDoLink(
 
     if (!isAffiliateStorefrontUrl(atual)) return { url: atual, bloqueado: false }
 
+    // Página de LISTAS do afiliado (/social/<nome>/lists): o link não leva a um
+    // produto só, e não há o que capturar. Medido na máquina do dono: 14 links
+    // assim numa tarde, cada um custando abrir a vitrine no navegador (~13 s)
+    // só para descobrir isso no fim. O endereço já diz.
+    if (/\/social\/[^/?#]+\/lists(?:[/?#]|$)/i.test(atual)) return { url: atual, bloqueado: false }
+
     // Quem vai capturar o produto pede o navegador de saída: é a única forma de
     // a foto vir junto, e evita baixar a mesma vitrine duas vezes. Quem só quer
     // o endereço (geração do link de afiliado) fica na requisição simples.
