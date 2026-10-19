@@ -92,6 +92,8 @@ export interface ElectronAPI {
   // Eventos
   onWhatsAppQrCode: (callback: (qr: string) => void) => () => void
   onWhatsAppStatus: (callback: (status: string) => void) => () => void
+  onWhatsAppAlerta: (callback: (alerta: string | null) => void) => () => void
+  onNavegar: (callback: (rota: string) => void) => () => void
   onTelegramCode: (callback: () => void) => () => void
   onTelegramStatus: (callback: (status: string) => void) => () => void
   onQueueUpdate: (callback: (jobs: any[]) => void) => () => void

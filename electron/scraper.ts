@@ -2,7 +2,7 @@ import axios from 'axios'
 import * as cheerio from 'cheerio'
 import log from 'electron-log'
 import { AffiliateManager } from './affiliate'
-import { DatabaseManager, Product } from './database'
+import { DatabaseManager, Product, chaveDeLojaDoProduto } from './database'
 import { renderPageHtml } from './headlessScraper'
 import {
   MercadoLivreApi,
@@ -286,9 +286,61 @@ export class ScraperManager {
       const u = bruto.replace(/[.,;)\\]+$/, '')
       if (EH_MIDIA.test(u) || EH_ARQUIVO.test(u)) continue
       if (!this.affiliateManager.detectStore(u)) continue
+      // Ser da loja não basta: tem que levar a um PRODUTO. Medido ao vivo com
+      // `seuhardware.com/s/...`: a página era o próprio produto da Amazon, e o
+      // primeiro link da Amazon dentro dela era o rodapé de ajuda
+      // (`/gp/help/customer/display.html`). O app adotava esse link, e a oferta
+      // se perdia tentando raspar uma página de ajuda.
+      if (!this.pareceLinkDeProduto(u)) continue
       return u
     }
     return null
+  }
+
+  /**
+   * O endereço leva a um produto — direto (com o código dele) ou por um
+   * encurtador/vitrine da própria loja, que os resolvedores sabem seguir?
+   */
+  private pareceLinkDeProduto(url: string): boolean {
+    if (chaveDeLojaDoProduto(url)) return true
+    return [
+      /\/\/(?:[^/]*\.)?(?:amzn\.(?:to|eu)|a\.co|link\.amazon)\//i,
+      /\/\/(?:[^/]*\.)?meli\.la\//i,
+      /mercadolivre\.com(?:\.br)?\/(?:sec|social)\//i,
+      /\/\/(?:s\.shopee\.com\.br|shp\.ee)\//i,
+      /shopee\.[a-z.]+\/product\/\d+\/\d+/i,
+      /\/\/(?:a|s\.click|star)\.aliexpress\.com\//i,
+    ].some((padrao) => padrao.test(url))
+  }
+
+  /**
+   * Para onde o link redireciona, sem abrir navegador.
+   *
+   * Muito agregador é só um redirecionamento: `seuhardware.com/s/JTUrndr`
+   * responde levando direto a `amazon.com.br/dp/B0HHNZFXL5`. Nesse caso o
+   * produto já está no endereço final, e abrir a página para vasculhar links
+   * era pior duas vezes — gastava uma janela invisível e ainda escolhia o link
+   * errado.
+   */
+  private async destinoDoRedirecionamento(url: string): Promise<string | null> {
+    try {
+      // Só interessa o endereço final, não a página. Em fluxo, e o fluxo é
+      // fechado logo: sem isto, cada link baixava a página de destino inteira
+      // (~620 KB no produto da Amazon) para jogar fora — e era mais um acesso
+      // completo à loja a partir do IP do usuário.
+      const r = await axios.get(url, {
+        maxRedirects: 10,
+        timeout: 15000,
+        validateStatus: () => true,
+        responseType: 'stream',
+        headers: { 'User-Agent': DESKTOP_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' },
+      })
+      const final = r.request?.res?.responseUrl || r.request?.responseURL
+      r.data?.destroy?.()
+      return typeof final === 'string' && final ? final : null
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -351,6 +403,14 @@ export class ScraperManager {
   }
 
   private async resolverAgregadorAgora(url: string): Promise<string | null> {
+    // Primeiro o caminho barato: se o agregador só redireciona, o endereço
+    // final já é o produto. Ver destinoDoRedirecionamento.
+    const destino = await this.destinoDoRedirecionamento(url)
+    if (destino && destino !== url && this.affiliateManager.detectStore(destino) && this.pareceLinkDeProduto(destino)) {
+      log.info(`Agregador resolvido pelo redirecionamento: ${url.substring(0, 45)} -> ${destino.substring(0, 70)}`)
+      return destino
+    }
+
     // Essas paginas costumam ser client-side: no teste real o `axios` levou
     // HTTP 500 e o navegador carregou normalmente.
     try {
@@ -564,8 +624,14 @@ export class ScraperManager {
     // na raspagem logo abaixo.
     const fromApi = await this.mercadoLivreApi.fetchProduct(url)
     if (fromApi) {
-      log.info(`Produto do Mercado Livre obtido pela API oficial: ${fromApi.title}`)
-      return fromApi
+      // Nome do cartão da vitrine, quando o link veio por ela. A API de
+      // catálogo devolve o nome do catálogo compartilhado entre países, e às
+      // vezes ele vem em espanhol e cortado — medido ao vivo: "Tarjeta Gráfica
+      // Asus Prime Rtx 5070 De 12 Gb Con Nvidia Gefo", para um produto cujo
+      // endereço e cartão estavam em português.
+      const titulo = resolvido.titulo || fromApi.title
+      log.info(`Produto do Mercado Livre obtido pela API oficial: ${titulo}`)
+      return { ...fromApi, title: titulo }
     }
 
     const { $, html } = await this.fetchPage(url)

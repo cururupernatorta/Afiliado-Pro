@@ -88,6 +88,8 @@ export interface ElectronAPI {
 
   onWhatsAppQrCode: (callback: (qr: string) => void) => () => void
   onWhatsAppStatus: (callback: (status: string) => void) => () => void
+  onWhatsAppAlerta: (callback: (alerta: string | null) => void) => () => void
+  onNavegar: (callback: (rota: string) => void) => () => void
   onTelegramCode: (callback: () => void) => () => void
   onTelegramStatus: (callback: (status: string) => void) => () => void
   onQueueUpdate: (callback: (jobs: any[]) => void) => () => void
@@ -207,6 +209,16 @@ const api: ElectronAPI = {
     const handler = (_: any, status: string) => callback(status)
     ipcRenderer.on('whatsapp:status', handler)
     return () => ipcRenderer.removeListener('whatsapp:status', handler)
+  },
+  onWhatsAppAlerta: (callback) => {
+    const handler = (_: any, alerta: string | null) => callback(alerta)
+    ipcRenderer.on('whatsapp:alerta', handler)
+    return () => ipcRenderer.removeListener('whatsapp:alerta', handler)
+  },
+  onNavegar: (callback) => {
+    const handler = (_: any, rota: string) => callback(rota)
+    ipcRenderer.on('app:navegar', handler)
+    return () => ipcRenderer.removeListener('app:navegar', handler)
   },
   onTelegramCode: (callback) => {
     const handler = () => callback()

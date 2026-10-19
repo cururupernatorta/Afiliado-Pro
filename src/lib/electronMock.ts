@@ -15,7 +15,13 @@ export function installElectronMockIfNeeded() {
     whatsappConnect: async () => {},
     whatsappReconnect: async () => {},
     whatsappDisconnect: async () => {},
-    whatsappGetStatus: async () => ({ status: 'disconnected', qrCode: null }),
+    // `?alerta=sessao_invalidada` (etc.) na URL simula o aviso do topo, para
+    // conferir os quatro estados no navegador.
+    whatsappGetStatus: async () => ({
+      status: 'disconnected',
+      qrCode: null,
+      alerta: new URLSearchParams(window.location.search).get('alerta'),
+    }),
     whatsappGetGroups: async () => [],
     whatsappToggleMonitor: async () => {},
     whatsappSendProducts: async () => {},
@@ -89,6 +95,8 @@ export function installElectronMockIfNeeded() {
 
     onWhatsAppQrCode: noop,
     onWhatsAppStatus: noop,
+    onWhatsAppAlerta: noop,
+    onNavegar: noop,
     onTelegramCode: noop,
     onTelegramStatus: noop,
     onQueueUpdate: noop,

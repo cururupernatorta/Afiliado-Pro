@@ -8,7 +8,7 @@ import { WhatsAppManager } from './whatsapp'
 import { TelegramManager } from './telegram'
 import { ScraperManager } from './scraper'
 import { AffiliateManager } from './affiliate'
-import { setMainWindow } from './utils'
+import { setMainWindow, definirMostrarJanela } from './utils'
 import { formatMessage, DEFAULT_TEMPLATE_TEXT, autoRepostProduct } from './messageHelper'
 import log from 'electron-log'
 
@@ -20,6 +20,40 @@ let tray: Tray | null = null
 // app está realmente encerrando (update, Cmd+Q no Mac etc.) — nesses casos o
 // fechamento da janela segue normal em vez de ser interceptado.
 let isQuitting = false
+
+// Uma cópia só do app.
+//
+// Fechar a janela só esconde o app na bandeja, então clicar no ícone da área de
+// trabalho com ele já aberto criava uma SEGUNDA cópia. As duas conectavam ao
+// WhatsApp com a mesma sessão e uma derrubava a outra (connectionReplaced) — o
+// tipo de vai-e-vem que, no log de um testador, terminou com o WhatsApp
+// invalidando a sessão. Agora o segundo clique só traz a janela que já existe.
+let temATravaDeInstanciaUnica = app.requestSingleInstanceLock()
+// Exceção: reaberto pelo instalador depois de uma atualização (ele passa
+// --updated). A cópia antiga pode ainda estar terminando de fechar — WhatsApp
+// desligando, banco gravando — e segurar a trava por alguns segundos. Sair na
+// hora aqui faria o app "fechar sozinho" logo depois de atualizar. Essa cópia
+// espera a trava em vez de desistir (ver esperarTravaDeInstanciaUnica).
+const reabertoPelaAtualizacao = process.argv.includes('--updated')
+if (!temATravaDeInstanciaUnica && !reabertoPelaAtualizacao) {
+  app.exit(0)
+}
+app.on('second-instance', () => mostrarJanela())
+
+/** Tenta pegar a trava por até `prazoMs`, de meio em meio segundo. */
+async function esperarTravaDeInstanciaUnica(prazoMs: number): Promise<boolean> {
+  const limite = Date.now() + prazoMs
+  while (Date.now() < limite) {
+    await new Promise((r) => setTimeout(r, 500))
+    if (app.requestSingleInstanceLock()) return true
+  }
+  return false
+}
+
+// Sem isto o Windows não mostra as notificações do app instalado: o id precisa
+// ser o mesmo do atalho criado pelo instalador (o appId do package.json).
+if (process.platform === 'win32') app.setAppUserModelId('com.afiliadopro.app')
+
 let dbManager: DatabaseManager
 let queueManager: QueueManager
 let whatsappManager: WhatsAppManager
@@ -283,21 +317,26 @@ const createTray = (): void => {
   tray = new Tray(icon.isEmpty() ? icon : icon.resize({ width: 16, height: 16 }))
   tray.setToolTip('Afiliado Pro')
 
-  const showWindow = () => {
-    if (!mainWindow) { createWindow(); return }
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-  }
-
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Abrir Afiliado Pro', click: showWindow },
+    { label: 'Abrir Afiliado Pro', click: mostrarJanela },
     { type: 'separator' },
     { label: 'Sair', click: () => { isQuitting = true; app.quit() } },
   ]))
 
-  tray.on('click', showWindow)
+  tray.on('click', mostrarJanela)
 }
+
+/** Traz a janela de volta — da bandeja, minimizada, ou recriada se fechou. */
+function mostrarJanela(): void {
+  // Fechando (atualização, "Sair"): não pode ressuscitar a janela — a cópia
+  // nova que espera a trava dispara 'second-instance' aqui enquanto esta fecha.
+  if (!app.isReady() || isQuitting) return
+  if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+definirMostrarJanela(mostrarJanela)
 
 // Busca automática de ofertas: o agendamento precisa ser refeito quando a
 // configuração muda, e o botão "Buscar agora" (definido em setupIpcHandlers,
@@ -308,6 +347,16 @@ let buscarOfertasAgora: (() => Promise<number>) | null = null
 let reagendarBuscaAutomatica: (() => void) | null = null
 
 app.whenReady().then(async () => {
+  // Cópia duplicada: não pode chegar a abrir o banco nem conectar ao WhatsApp.
+  // Só chega aqui sem a trava quando foi reaberta pela atualização.
+  if (!temATravaDeInstanciaUnica) {
+    temATravaDeInstanciaUnica = await esperarTravaDeInstanciaUnica(15000)
+    if (!temATravaDeInstanciaUnica) {
+      log.warn('Outra cópia do Afiliado Pro continua aberta; esta vai fechar')
+      app.exit(0)
+      return
+    }
+  }
   try {
     log.info('Afiliado Pro iniciando...')
 

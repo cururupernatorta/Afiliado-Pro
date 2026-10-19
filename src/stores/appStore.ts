@@ -125,6 +125,9 @@ interface AppState {
   setWhatsappStatus: (status: AppState['whatsappStatus']) => void
   whatsappQrCode: string | null
   setWhatsappQrCode: (qr: string | null) => void
+  /** Situação que exige ação do usuário — ver AlertaWhatsApp em electron/whatsapp.ts. */
+  whatsappAlerta: 'sessao_invalidada' | 'substituida' | 'fora_do_ar' | 'nao_conectado' | null
+  setWhatsappAlerta: (alerta: AppState['whatsappAlerta']) => void
 
   telegramStatus: 'disconnected' | 'connecting' | 'connected' | 'code_required' | 'error'
   setTelegramStatus: (status: AppState['telegramStatus']) => void
@@ -197,6 +200,8 @@ export const useAppStore = create<AppState>((set) => ({
   setWhatsappStatus: (status) => set({ whatsappStatus: status }),
   whatsappQrCode: null,
   setWhatsappQrCode: (qr) => set({ whatsappQrCode: qr }),
+  whatsappAlerta: null,
+  setWhatsappAlerta: (alerta) => set({ whatsappAlerta: alerta }),
 
   telegramStatus: 'disconnected',
   setTelegramStatus: (status) => set({ telegramStatus: status }),

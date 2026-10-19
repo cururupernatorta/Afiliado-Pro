@@ -7,9 +7,18 @@ import log from 'electron-log'
 import { DatabaseManager } from './database'
 import { QueueManager, SendProductsExtra } from './queue'
 import { ScraperManager } from './scraper'
-import { sendToRenderer, ErroDeConexao } from './utils'
+import { sendToRenderer, ErroDeConexao, notificarUsuario } from './utils'
 import { autoRepostProduct, extrairCupomDoTexto } from './messageHelper'
 import { bufferMessages, messageTimestampMs, selectRecoverableMessages, trimProcessedIds } from './historyRecovery'
+
+/**
+ * Situação do WhatsApp que exige atenção do usuário — ver alertaAtual.
+ *  - sessao_invalidada: o WhatsApp removeu este computador (401). Precisa de QR.
+ *  - substituida: outra conexão assumiu a sessão (440).
+ *  - fora_do_ar: reconectando há alguns minutos sem sucesso.
+ *  - nao_conectado: há grupos monitorados, mas nenhuma sessão salva.
+ */
+export type AlertaWhatsApp = 'sessao_invalidada' | 'substituida' | 'fora_do_ar' | 'nao_conectado'
 
 export class WhatsAppManager {
   private dbManager: DatabaseManager
@@ -19,6 +28,12 @@ export class WhatsAppManager {
   private qrCode: string | null = null
   private status: 'disconnected' | 'connecting' | 'connected' = 'disconnected'
   private authPath: string
+  // Motivo da última queda que exige ação do usuário. Zera quando conecta.
+  private motivoDaQueda: 'sessao_invalidada' | 'substituida' | null = null
+  private ultimoAlertaPublicado: AlertaWhatsApp | null | undefined = undefined
+  // Desde quando está sem conexão — ver alertaAtual ("fora do ar"). Zera ao conectar.
+  private desconectadoDesde: number | null = null
+  private readonly FORA_DO_AR_APOS_MS = 3 * 60 * 1000
   private reconnectAttempts: number = 0
   // Teto da espera entre tentativas. Não existe mais limite de tentativas: o
   // app precisa se recuperar sozinho de uma queda de qualquer duração, já que
@@ -347,7 +362,29 @@ monitorados_salvos=[${salvos}]`,
 
           this.status = 'disconnected'
           this.qrCode = null
+          if (this.desconectadoDesde === null) this.desconectadoDesde = Date.now()
           sendToRenderer('whatsapp:status', 'disconnected')
+
+          // Queda que só se resolve com o usuário: avisa fora do app também.
+          // Uma vez por ocorrência — a mesma situação não vira uma notificação
+          // a cada tentativa.
+          const motivo = isLoggedOut ? 'sessao_invalidada' : isReplaced ? 'substituida' : null
+          if (motivo && motivo !== this.motivoDaQueda) {
+            if (motivo === 'sessao_invalidada') {
+              notificarUsuario(
+                'WhatsApp desconectado do Afiliado Pro',
+                'O WhatsApp removeu este computador e nada está sendo capturado. Clique para ler o QR Code de novo.',
+                '/conexoes'
+              )
+            } else {
+              notificarUsuario(
+                'Outra conexão assumiu o seu WhatsApp',
+                'O Afiliado Pro parou de capturar. Feche o WhatsApp Web e outras cópias do app, depois reconecte.',
+                '/conexoes'
+              )
+            }
+          }
+          if (motivo) this.motivoDaQueda = motivo
 
           if (isLoggedOut) {
             // A sessão foi invalidada (logout feito pelo celular, dispositivo removido,
@@ -385,6 +422,8 @@ monitorados_salvos=[${salvos}]`,
             if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
             this.reconnectTimer = setTimeout(() => this.connect(), espera)
           }
+
+          this.publicarAlerta()
         } else if (connection === 'open') {
           this.status = 'connected'
           this.qrCode = null
@@ -399,6 +438,9 @@ monitorados_salvos=[${salvos}]`,
           }, this.CONEXAO_ESTAVEL_MS)
           if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
           sendToRenderer('whatsapp:status', 'connected')
+          this.motivoDaQueda = null
+          this.desconectadoDesde = null
+          this.publicarAlerta()
           log.info('WhatsApp conectado')
           this.startMonitoring()
           this.iniciarRelatorioDeRecepcao()
@@ -512,6 +554,7 @@ monitorados_salvos=[${salvos}]`,
       log.error('Erro ao conectar WhatsApp:', error)
       this.status = 'disconnected'
       sendToRenderer('whatsapp:status', 'error')
+      this.publicarAlerta()
     }
   }
 
@@ -719,6 +762,11 @@ monitorados_salvos=[${salvos}]`,
     this.qrCode = null
     this.reconnectAttempts = 0
     sendToRenderer('whatsapp:status', 'disconnected')
+    // Desconectar de propósito não é queda: some o motivo, e o aviso que sobra
+    // (se houver grupo monitorado) é só o de "não conectado".
+    this.motivoDaQueda = null
+    this.desconectadoDesde = null
+    this.publicarAlerta()
   }
 
   // Fecha a conexão sem deslogar nem apagar as credenciais — usado quando o
@@ -782,8 +830,44 @@ monitorados_salvos=[${salvos}]`,
     }
   }
 
-  getStatus(): { status: string; qrCode: string | null } {
-    return { status: this.status, qrCode: this.qrCode }
+  getStatus(): { status: string; qrCode: string | null; alerta: AlertaWhatsApp | null } {
+    return { status: this.status, qrCode: this.qrCode, alerta: this.alertaAtual() }
+  }
+
+  /**
+   * O que mostrar no aviso do topo do app, ou null se está tudo bem.
+   *
+   * O "não conectado" cobre o caso que motivou tudo isto: depois do 401 a
+   * sessão é apagada, e ao reabrir o app ele nem tenta conectar. Sem esta
+   * regra, o motivo da queda se perdia junto com o processo, e o app abria
+   * calado, com grupos monitorados e nada sendo lido.
+   */
+  private alertaAtual(): AlertaWhatsApp | null {
+    if (this.status === 'connected') return null
+    if (this.motivoDaQueda) return this.motivoDaQueda
+    // Pela duração da queda, e não pelo número de tentativas: o contador só
+    // zera depois que a conexão se sustenta, e uma queda de segundos logo após
+    // uma queda longa acenderia o aviso na hora. Abaixo de 3 minutos avisar
+    // seria ruído — 503 e 515 reconectam sozinhos em segundos.
+    if (this.desconectadoDesde !== null && Date.now() - this.desconectadoDesde >= this.FORA_DO_AR_APOS_MS) {
+      return 'fora_do_ar'
+    }
+    try {
+      const temMonitorados = this.dbManager.getMonitoredGroups('whatsapp').length > 0
+      const temSessao = fs.existsSync(path.join(this.authPath, 'creds.json'))
+      if (temMonitorados && !temSessao) return 'nao_conectado'
+    } catch {
+      // Banco ou disco indisponível agora: sem aviso, em vez de aviso errado.
+    }
+    return null
+  }
+
+  /** Envia o aviso para a interface, só quando ele muda. */
+  private publicarAlerta(): void {
+    const alerta = this.alertaAtual()
+    if (alerta === this.ultimoAlertaPublicado) return
+    this.ultimoAlertaPublicado = alerta
+    sendToRenderer('whatsapp:alerta', alerta)
   }
 
   getQrCode(): string | null {
@@ -820,6 +904,9 @@ monitorados_salvos=[${salvos}]`,
       monitored: enabled,
     })
     log.info(`Monitoramento ${enabled ? 'ativado' : 'desativado'} para grupo/canal WhatsApp: ${groupName}`)
+    // Marcar o primeiro grupo sem estar conectado acende o "não conectado";
+    // desmarcar o último apaga.
+    this.publicarAlerta()
 
     // Ao ligar o monitoramento, aproveita o que já veio na sincronização de
     // histórico dessa sessão em vez de só valer dali pra frente. Roda solto

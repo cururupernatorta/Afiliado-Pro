@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, useNavigate } from 'react-router-dom'
 import Layout from './components/layout/Layout'
 import UpdateNotification from './components/UpdateNotification'
 import Dashboard from './pages/Dashboard'
@@ -13,7 +13,8 @@ import Logs from './pages/Logs'
 import { useAppStore } from './stores/appStore'
 
 function App() {
-  const { setWhatsappStatus, setWhatsappQrCode, setTelegramStatus, setMercadoLivreStatus, setProducts, setGroups, setLogs } = useAppStore()
+  const { setWhatsappStatus, setWhatsappQrCode, setWhatsappAlerta, setTelegramStatus, setMercadoLivreStatus, setProducts, setGroups, setLogs } = useAppStore()
+  const navigate = useNavigate()
 
   // Esses listeners viviam dentro de Conexoes.tsx, então só captavam eventos
   // enquanto o usuário estava naquela aba — o React Router desmonta a página
@@ -27,6 +28,9 @@ function App() {
     window.electronAPI.whatsappGetStatus().then((s) => {
       setWhatsappStatus(s.status)
       if (s.qrCode) setWhatsappQrCode(s.qrCode)
+      // O aviso precisa existir já na abertura: depois de uma sessão
+      // invalidada o app reabre desconectado, e não vem evento nenhum.
+      setWhatsappAlerta(s.alerta ?? null)
     })
     window.electronAPI.telegramGetStatus().then((s) => setTelegramStatus(s.status))
 
@@ -53,16 +57,26 @@ function App() {
 
     const unsubQr = window.electronAPI.onWhatsAppQrCode((qr) => setWhatsappQrCode(qr))
     const unsubStatus = window.electronAPI.onWhatsAppStatus((status) => setWhatsappStatus(status as any))
+    const unsubAlerta = window.electronAPI.onWhatsAppAlerta((alerta) => setWhatsappAlerta(alerta as any))
     const unsubTelegramStatus = window.electronAPI.onTelegramStatus((status) => setTelegramStatus(status as any))
     const unsubMercadoLivre = window.electronAPI.onMercadoLivreStatus((status) => setMercadoLivreStatus(status as any))
 
     return () => {
       unsubQr()
       unsubStatus()
+      unsubAlerta()
       unsubTelegramStatus()
       unsubMercadoLivre()
     }
-  }, [setWhatsappStatus, setWhatsappQrCode, setTelegramStatus, setMercadoLivreStatus])
+  }, [setWhatsappStatus, setWhatsappQrCode, setWhatsappAlerta, setTelegramStatus, setMercadoLivreStatus])
+
+  // Clique na notificação do Windows: abre o app já na tela que resolve.
+  //
+  // Efeito separado de propósito. A função `navigate` muda a cada troca de
+  // rota (no react-router sem data router ela depende do pathname atual), e
+  // dentro do efeito de cima isso fazia o app recarregar produtos, grupos,
+  // logs e status, e reinscrever todos os eventos, a cada clique numa aba.
+  useEffect(() => window.electronAPI.onNavegar((rota) => navigate(rota)), [navigate])
 
   return (
     <>

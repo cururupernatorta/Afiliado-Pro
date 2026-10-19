@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Sidebar from './Sidebar'
 import Header from './Header'
+import AlertaWhatsApp from '../AlertaWhatsApp'
 import { useAppStore } from '../../stores/appStore'
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -21,6 +22,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         className="pt-16 min-h-screen transition-all duration-300"
         style={{ marginLeft: sidebarOpen ? 260 : 72 }}
       >
+        {/* Fora do motion.div da página: o aviso não pode piscar a cada troca de aba. */}
+        <AlertaWhatsApp />
         <motion.div
           key={location.pathname}
           initial={{ opacity: 0, y: 10 }}
